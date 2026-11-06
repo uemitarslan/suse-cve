@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+import sys
+import os
+import re
+import json
+import subprocess
+import bz2
+import sqlite3
+from datetime import datetime
+
+try:
+    from lxml import etree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
+
+DATA_DIR = "/var/cache/suse-cve"
+DB_PATH = os.path.join(DATA_DIR, "suse_cve.db")
+
+STATUS_ALIASES = {
+    "rel": "RELEASED",
+    "released": "RELEASED",
+    "fix": "RELEASED",
+    "fixed": "RELEASED",
+    "qa": "IN QA",
+    "inqa": "IN QA",
+    "in_qa": "IN QA",
+    "in qa": "IN QA",
+    "inp": "IN PROGRESS",
+    "prog": "IN PROGRESS",
+    "progress": "IN PROGRESS",
+    "in progress": "IN PROGRESS",
+    "in_progress": "IN PROGRESS",
+    "aff": "AFFECTED",
+    "affected": "AFFECTED",
+    "wont": "WONT FIX",
+    "wontfix": "WONT FIX",
+}
+
+USE_COLOR = sys.stdout.isatty()
+
+if USE_COLOR:
+    CLR_RESET = "\033[0m"
+    CLR_BOLD = "\033[1m"
+    CLR_DIM = "\033[2m"
+    PALETTE = {
+        "RELEASED": {"header": "\033[1;32m", "pkg": "\033[32m"},
+        "IN QA": {"header": "\033[1;33m", "pkg": "\033[33m"},
+        "AFFECTED": {"header": "\033[1;31m", "pkg": "\033[31m"},
+        "NOT AFFECTED": {"header": "\033[1;36m", "pkg": "\033[36m"},
+        "WONT FIX": {"header": "\033[1;34m", "pkg": "\033[34m"},
+    }
+else:
+    CLR_RESET = ""
+    CLR_BOLD = ""
+    CLR_DIM = ""
+    PALETTE = {}
+
+def clean_pkg_name(raw_name: str) -> str:
+    if not raw_name or raw_name.lower() in ("open", "no", "is", "installed", "all"):
+        return ""
+    if "livepatch" in raw_name.lower():
+        return "kernel-livepatch"
+    m = re.match(r'^([a-zA-Z0-9_\-]+?)(?:-\d+.*|$)', raw_name)
+    if m:
+        return m.group(1).rstrip("-")
+    return raw_name
+
+def build_platform_regex(rel_arg: str):
+    s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
+    m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
+    major = m.group(1) if m else "15"
+    sp = m.group(2) if (m and m.group(2)) else ""
+
+    if sp:
+        pattern = rf"(?=.*\b{major}\b)(?=.*(?:sp\s*{sp}|service pack\s*{sp}|{major}\.{sp}))"
+        regex = re.compile(pattern, re.IGNORECASE)
+    else:
+        regex = re.compile(rf"\b{major}\b", re.IGNORECASE)
+    
+    return major, sp, regex
+
+def get_oval_timestamp(major: str) -> str:
+    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
+    if not os.path.exists(fpath):
+        return "N/A"
+    try:
+        with bz2.open(fpath, "rb") as bz:
+            chunk = bz.read(2048).decode("utf-8", errors="ignore")
+            m = re.search(r"<(?:\w+:)?timestamp>([^<]+)</(?:\w+:)?timestamp>", chunk)
+            if m:
+                ts = m.group(1).replace("T", " ")
+                return ts.split(".")[0]
+    except Exception:
+        pass
+    return "N/A"
+
+def fetch_web_data(cve_id: str, platform_regex):
+    """Holt HTML, HTTP-Last-Modified und baut Status-Maps auf."""
+    url = f"https://www.suse.com/security/cve/{cve_id}.html"
+    web_map = {}
+    web_last_modified = "N/A"
+    web_all_prods_for_major = set()
+
+    try:
+        proc = subprocess.run(
+            ["curl", "-sIL", "--max-time", "10", url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        head_out = proc.stdout.decode("utf-8", errors="ignore")
+        m_mod = re.findall(r"last-modified:\s*([^\r\n]+)", head_out, re.IGNORECASE)
+        if m_mod:
+            web_last_modified = m_mod[-1].strip()
+
+        proc_body = subprocess.run(
+            ["curl", "-sL", "--max-time", "10", url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        html = proc_body.stdout.decode("utf-8", errors="ignore")
+    except Exception:
+        return web_map, web_last_modified, web_all_prods_for_major, False
+
+    # 1. 'List of packages in QA'
+    m_qa = re.search(r'List of packages in QA.*?<table[^>]*>(.*?)</table>', html, re.DOTALL | re.IGNORECASE)
+    if m_qa:
+        for row in re.findall(r'<tr[^>]*>(.*?)</tr>', m_qa.group(1), re.DOTALL | re.IGNORECASE):
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
+            if len(tds) >= 2:
+                prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
+                if prod and "product" not in prod.lower():
+                    web_all_prods_for_major.add(prod)
+                    if platform_regex.search(prod):
+                        pkgs = re.findall(r'<code[^>]*>(.*?)</code>', tds[1], re.DOTALL | re.IGNORECASE)
+                        if not pkgs:
+                            pkgs = re.findall(r'<li>(.*?)</li>', tds[1], re.DOTALL | re.IGNORECASE)
+                        for raw_p in pkgs:
+                            p_clean = clean_pkg_name(re.sub(r'\s*(?:>=|&gt;=).*', '', re.sub(r'<[^>]+>', '', raw_p)).strip())
+                            if p_clean:
+                                web_map.setdefault("IN QA", {}).setdefault(prod, set()).add(p_clean)
+
+    # 2. Haupt-Statustabelle
+    for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE):
+        tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
+        if len(tds) >= 2:
+            prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
+            if not prod or "product" in prod.lower():
+                continue
+
+            found_status = None
+            pkg_name = ""
+            for td in tds[1:]:
+                clean_td = re.sub(r'<[^>]+>', ' ', td).strip()
+                norm = STATUS_ALIASES.get(clean_td.lower())
+                if norm or "cve-status" in td or clean_td.lower() in ("released", "affected", "not affected", "wont fix"):
+                    found_status = norm if norm else clean_td.upper()
+                else:
+                    cand_pkg = clean_pkg_name(clean_td)
+                    if cand_pkg and not pkg_name:
+                        pkg_name = cand_pkg
+
+            if found_status:
+                web_all_prods_for_major.add(prod)
+                if pkg_name and platform_regex.search(prod):
+                    web_map.setdefault(found_status, {}).setdefault(prod, set()).add(pkg_name)
+
+    return web_map, web_last_modified, web_all_prods_for_major, True
+
+def query(rel_arg, cve_arg, status_filter=None, as_json=False):
+    if not os.path.exists(DB_PATH):
+        if as_json:
+            print(json.dumps({"error": "Local database not found. Run 'suse-cve --update' first."}))
+        else:
+            print(f"{CLR_BOLD}Lokale Datenbank nicht gefunden. Führe erst 'suse-cve --update' aus.{CLR_RESET}")
+        sys.exit(1)
+
+    cve = cve_arg.upper().strip()
+    if not cve.startswith("CVE-"):
+        cve = f"CVE-{cve}"
+
+    major, sp, sp_regex = build_platform_regex(rel_arg)
+    oval_ts = get_oval_timestamp(major)
+
+    target_status = None
+    if status_filter:
+        norm_key = status_filter.lower().strip()
+        target_status = STATUS_ALIASES.get(norm_key, status_filter.upper().strip())
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT platform, package, status FROM cve_catalog WHERE cve=? AND major=?", (cve, major))
+    rows = cur.fetchall()
+    conn.close()
+
+    raw_status_map = {}
+    if rows:
+        hits = [r for r in rows if sp_regex.search(r[0])]
+        for p, pkgs, st in hits:
+            pkg_set = set(clean_pkg_name(item) for item in pkgs.split(", ") if clean_pkg_name(item))
+            raw_status_map.setdefault(st, {}).setdefault(p, set()).update(pkg_set)
+
+    web_map, web_ts, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
+
+    # Wenn Web erreichbar ist: Live-Zustände einpflegen
+    if web_ok:
+        for st, p_dict in web_map.items():
+            for prod, pkgs in p_dict.items():
+                raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(pkgs)
+
+        # Wenn Web-Status vorhanden ist, aber bestimmte OVAL-Plattformen im Web
+        # überhaupt nicht mehr erwähnt werden (z. B. obsoletes SP7): aus AFFECTED entfernen
+        if web_all_prods and "AFFECTED" in raw_status_map:
+            # Prüfen ob SP-bezogene Zeilen im Web existieren
+            matching_web = [p for p in web_all_prods if sp_regex.search(p)]
+            if not matching_web and sp:
+                # Das gesamte SP existiert im Web nicht mehr als betroffen
+                del raw_status_map["AFFECTED"]
+            else:
+                for p in list(raw_status_map["AFFECTED"].keys()):
+                    if p not in web_all_prods:
+                        del raw_status_map["AFFECTED"][p]
+                if not raw_status_map["AFFECTED"]:
+                    del raw_status_map["AFFECTED"]
+
+    # Vorrang-Bereinigung: RELEASED / IN QA löscht AFFECTED
+    rel_dict = raw_status_map.get("RELEASED", {})
+    qa_dict = raw_status_map.get("IN QA", {})
+
+    if "AFFECTED" in raw_status_map:
+        for p in list(raw_status_map["AFFECTED"].keys()):
+            if p in rel_dict:
+                raw_status_map["AFFECTED"][p] -= rel_dict[p]
+                if not raw_status_map["AFFECTED"][p]:
+                    del raw_status_map["AFFECTED"][p]
+            elif p in qa_dict:
+                raw_status_map["AFFECTED"][p] -= qa_dict[p]
+                if not raw_status_map["AFFECTED"][p]:
+                    del raw_status_map["AFFECTED"][p]
+
+        if not raw_status_map["AFFECTED"]:
+            del raw_status_map["AFFECTED"]
+
+    if not raw_status_map:
+        if as_json:
+            print(json.dumps({
+                "cve": cve,
+                "release": rel_arg,
+                "status": "NOT_AFFECTED_OR_UNKNOWN",
+                "meta": {"oval_timestamp": oval_ts, "web_last_modified": web_ts},
+                "results": {}
+            }, indent=2))
+        else:
+            print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}")
+            print(f"NOT AFFECTED / UNKNOWN (Keine Einträge für {cve} unter {rel_arg})")
+        sys.exit(0)
+
+    # Filter-Auswahl
+    output_dict = {}
+    if target_status:
+        keys_to_check = [target_status]
+        if target_status == "IN PROGRESS":
+            keys_to_check = ["IN QA", "AFFECTED"]
+
+        for k in keys_to_check:
+            if k in raw_status_map and raw_status_map[k]:
+                output_dict[k] = {
+                    p: sorted(list(pkgs)) for p, pkgs in sorted(raw_status_map[k].items()) if pkgs
+                }
+
+        if not output_dict:
+            if as_json:
+                print(json.dumps({
+                    "cve": cve,
+                    "release": rel_arg,
+                    "filter": target_status,
+                    "status": "NONE",
+                    "meta": {"oval_timestamp": oval_ts, "web_last_modified": web_ts},
+                    "results": {}
+                }, indent=2))
+            else:
+                print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}")
+                print(f"NONE (Keine Pakete mit Status '{target_status}' für {cve} auf {rel_arg})")
+            sys.exit(1)
+
+    else:
+        for st in ["RELEASED", "IN QA", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
+            if st in raw_status_map and raw_status_map[st]:
+                output_dict[st] = {
+                    p: sorted(list(pkgs)) for p, pkgs in sorted(raw_status_map[st].items()) if pkgs
+                }
+
+    # Formatierte Ausgabe
+    if as_json:
+        payload = {
+            "cve": cve,
+            "release": rel_arg,
+            "major": major,
+            "sp": sp,
+            "filter": target_status if target_status else "ALL",
+            "meta": {
+                "oval_timestamp": oval_ts,
+                "web_last_modified": web_ts
+            },
+            "results": output_dict
+        }
+        print(json.dumps(payload, indent=2))
+        sys.exit(0)
+
+    # Header mit Sync-Ständen
+    print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}\n")
+
+    for st, p_dict in output_dict.items():
+        colors = PALETTE.get(st, {"header": CLR_BOLD, "pkg": ""})
+        h_color = colors.get("header", CLR_BOLD)
+        p_color = colors.get("pkg", "")
+
+        print(f"{h_color}[{st}]{CLR_RESET}")
+        for p, pkgs in p_dict.items():
+            if pkgs:
+                pkgs_formatted = f"{p_color}{', '.join(pkgs)}{CLR_RESET}"
+                print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{p}{CLR_RESET} -> {pkgs_formatted}")
+        print()
+
+def build_index():
+    print(f"=== Baue OVAL-Index auf (SLES 12, 15, 16) ===")
+    tmp_db = DB_PATH + ".tmp"
+    if os.path.exists(tmp_db):
+        os.remove(tmp_db)
+
+    conn = sqlite3.connect(tmp_db)
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS cve_catalog (cve TEXT, major TEXT, platform TEXT, package TEXT, status TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_search ON cve_catalog(cve, major)")
+
+    files = [
+        ("suse.linux.enterprise.16.xml.bz2", "16", "RELEASED"),
+        ("suse.linux.enterprise.16-affected.xml.bz2", "16", "AFFECTED"),
+        ("suse.linux.enterprise.15.xml.bz2", "15", "RELEASED"),
+        ("suse.linux.enterprise.15-affected.xml.bz2", "15", "AFFECTED"),
+        ("suse.linux.enterprise.12.xml.bz2", "12", "RELEASED"),
+        ("suse.linux.enterprise.12-affected.xml.bz2", "12", "AFFECTED"),
+    ]
+
+    total_count = 0
+    for fname, major, base_status in files:
+        fpath = os.path.join(DATA_DIR, fname)
+        if not os.path.exists(fpath):
+            continue
+        print(f"Lese {fname} ...", flush=True)
+        batch = []
+        with bz2.open(fpath, "rb") as bz:
+            for event, elem in ET.iterparse(bz, events=("end",), tag="{*}definition"):
+                found_cves = set()
+                for ref in elem.findall(".//{*}reference"):
+                    rid = ref.attrib.get("ref_id", "")
+                    m = re.search(r'CVE-\d{4}-\d+', rid, re.IGNORECASE)
+                    if m:
+                        found_cves.add(m.group(0).upper())
+                for c_node in elem.findall(".//{*}cve"):
+                    txt = c_node.text or ""
+                    m = re.search(r'CVE-\d{4}-\d+', txt, re.IGNORECASE)
+                    if m:
+                        found_cves.add(m.group(0).upper())
+
+                if found_cves:
+                    platforms = [p.text.strip() for p in elem.findall(".//{*}platform") if p.text]
+                    if not platforms:
+                        platforms = [f"SUSE Linux Enterprise {major}"]
+
+                    pkg_names = set()
+                    for crit in elem.findall(".//{*}criterion"):
+                        comment = crit.attrib.get("comment", "")
+                        m_pkg = re.match(r'^([^ ]+)', comment)
+                        if m_pkg and not m_pkg.group(1).startswith("SUSE"):
+                            cleaned = clean_pkg_name(m_pkg.group(1))
+                            if cleaned:
+                                pkg_names.add(cleaned)
+
+                    pkg_str = ", ".join(sorted(pkg_names)) if pkg_names else "all"
+                    for c in found_cves:
+                        for p in platforms:
+                            batch.append((c, major, p, pkg_str, base_status))
+
+                elem.clear()
+                while elem.getprevious() is not None:
+                    del elem.getparent()[0]
+
+                if len(batch) >= 20000:
+                    with conn:
+                        conn.executemany("INSERT INTO cve_catalog VALUES (?, ?, ?, ?, ?)", batch)
+                    total_count += len(batch)
+                    batch.clear()
+
+        if batch:
+            with conn:
+                conn.executemany("INSERT INTO cve_catalog VALUES (?, ?, ?, ?, ?)", batch)
+            total_count += len(batch)
+
+    conn.close()
+    os.replace(tmp_db, DB_PATH)
+    print(f"Index fertig! {total_count} Einträge indiziert.\n")
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] in ("--update", "--reindex"):
+        build_index()
+        sys.exit(0)
+
+    raw_args = sys.argv[1:]
+    as_json = "--json" in raw_args
+    if as_json:
+        raw_args.remove("--json")
+
+    if len(raw_args) < 2:
+        print("Verwendung: suse-cve <release> <cve> [status_filter] [--json]")
+        print("Beispiele : suse-cve 12sp5 CVE-2026-98432 rel")
+        print("            suse-cve 15sp7 CVE-2026-98432")
+        print("            suse-cve 15sp7 CVE-2026-98432 --json")
+        sys.exit(1)
+
+    filter_arg = raw_args[2] if len(raw_args) > 2 else None
+    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json)

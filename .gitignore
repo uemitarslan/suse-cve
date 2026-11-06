@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.db
+*.tmp
+/var/cache/
+*.bz2
