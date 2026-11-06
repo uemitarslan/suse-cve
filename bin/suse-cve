@@ -6,7 +6,6 @@ import json
 import subprocess
 import bz2
 import sqlite3
-from datetime import datetime
 
 try:
     from lxml import etree as ET
@@ -95,7 +94,6 @@ def get_oval_timestamp(major: str) -> str:
     return "N/A"
 
 def fetch_web_data(cve_id: str, platform_regex):
-    """Holt HTML, HTTP-Last-Modified und baut Status-Maps auf."""
     url = f"https://www.suse.com/security/cve/{cve_id}.html"
     web_map = {}
     web_last_modified = "N/A"
@@ -203,19 +201,14 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
 
     web_map, web_ts, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
 
-    # Wenn Web erreichbar ist: Live-Zustände einpflegen
     if web_ok:
         for st, p_dict in web_map.items():
             for prod, pkgs in p_dict.items():
                 raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(pkgs)
 
-        # Wenn Web-Status vorhanden ist, aber bestimmte OVAL-Plattformen im Web
-        # überhaupt nicht mehr erwähnt werden (z. B. obsoletes SP7): aus AFFECTED entfernen
         if web_all_prods and "AFFECTED" in raw_status_map:
-            # Prüfen ob SP-bezogene Zeilen im Web existieren
             matching_web = [p for p in web_all_prods if sp_regex.search(p)]
             if not matching_web and sp:
-                # Das gesamte SP existiert im Web nicht mehr als betroffen
                 del raw_status_map["AFFECTED"]
             else:
                 for p in list(raw_status_map["AFFECTED"].keys()):
@@ -224,7 +217,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
                 if not raw_status_map["AFFECTED"]:
                     del raw_status_map["AFFECTED"]
 
-    # Vorrang-Bereinigung: RELEASED / IN QA löscht AFFECTED
     rel_dict = raw_status_map.get("RELEASED", {})
     qa_dict = raw_status_map.get("IN QA", {})
 
@@ -256,7 +248,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
             print(f"NOT AFFECTED / UNKNOWN (Keine Einträge für {cve} unter {rel_arg})")
         sys.exit(0)
 
-    # Filter-Auswahl
     output_dict = {}
     if target_status:
         keys_to_check = [target_status]
@@ -291,7 +282,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
                     p: sorted(list(pkgs)) for p, pkgs in sorted(raw_status_map[st].items()) if pkgs
                 }
 
-    # Formatierte Ausgabe
     if as_json:
         payload = {
             "cve": cve,
@@ -308,7 +298,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
-    # Header mit Sync-Ständen
     print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}\n")
 
     for st, p_dict in output_dict.items():
@@ -351,7 +340,11 @@ def build_index():
         print(f"Lese {fname} ...", flush=True)
         batch = []
         with bz2.open(fpath, "rb") as bz:
-            for event, elem in ET.iterparse(bz, events=("end",), tag="{*}definition"):
+            context = ET.iterparse(bz, events=("end",))
+            for event, elem in context:
+                if not elem.tag.endswith("definition"):
+                    continue
+
                 found_cves = set()
                 for ref in elem.findall(".//{*}reference"):
                     rid = ref.attrib.get("ref_id", "")
