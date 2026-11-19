@@ -627,25 +627,12 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{p}{CLR_RESET} -> {pkgs_formatted}")
         print()
 
-    # [PATCHES] Sektion mit direkt kopierbarem zypper-Befehl
+    # [PATCHES] Sektion
     if sorted_patches and (not target_status or target_status == "RELEASED"):
         print(f"{CLR_CYAN}[PATCHES]{CLR_RESET}")
-        all_patch_ids = []
-        seen_pids = set()
         for prod, p_list in sorted_patches.items():
-            formatted_entries = []
-            for item in p_list:
-                pid = item["patch"]
-                archs = ",".join(item["archs"])
-                formatted_entries.append(f"{pid} ({archs})")
-                if pid not in seen_pids:
-                    seen_pids.add(pid)
-                    all_patch_ids.append(pid)
+            formatted_entries = [f"{item['patch']} ({','.join(item['archs'])})" for item in p_list]
             print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{prod}{CLR_RESET} -> {', '.join(formatted_entries)}")
-
-        if all_patch_ids:
-            print(f"\n  {CLR_DIM}Quick-Install (alle Module):{CLR_RESET}")
-            print(f"  {CLR_BOLD}zypper in -t patch {' '.join(all_patch_ids)}{CLR_RESET}")
         print()
 
     if mitigation_data:
