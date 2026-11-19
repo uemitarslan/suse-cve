@@ -540,6 +540,55 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     }
 
 
+
+def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict) -> list:
+    """Return a clean sorted list of affected SLES major/minor releases (e.g. 'SLES 15 SP5', 'SLES 16.0')."""
+    releases = set()
+
+    def extract_sles_tag(text: str):
+        low = text.lower()
+        if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
+            return None
+        # Match SLES / SLE 12, 15, 16 with optional SP or minor version
+        m = re.search(r'(?:suse linux enterprise|sle[s]?)[^0-9]*\b(12|15|16)(?:[.\s-]*(?:sp|service pack)?\s*(\d+))?', low)
+        if not m:
+            return None
+        maj = m.group(1)
+        minor = m.group(2)
+        if maj == "16":
+            return f"SLES 16.{minor if minor else '0'}"
+        if minor:
+            return f"SLES {maj} SP{minor}"
+        return f"SLES {maj}"
+
+    # 1. Check local SQLite OVAL database across all majors (12, 15, 16)
+    if os.path.exists(DB_PATH):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT platform FROM cve_catalog WHERE cve=?", (cve,))
+        for (plat,) in cur.fetchall():
+            tag = extract_sles_tag(plat)
+            if tag:
+                releases.add(tag)
+        conn.close()
+
+    # 2. Merge live web products (excluding NOT AFFECTED)
+    not_aff_prods = set(web_map.get("NOT AFFECTED", {}).keys())
+    for prod in web_all_prods:
+        if prod in not_aff_prods:
+            continue
+        tag = extract_sles_tag(prod)
+        if tag:
+            releases.add(tag)
+
+    # Remove generic 'SLES 15' if specific SPs like 'SLES 15 SP5' exist
+    for maj in ("12", "15"):
+        if any(r.startswith(f"SLES {maj} SP") for r in releases):
+            releases.discard(f"SLES {maj}")
+
+    return sorted(releases)
+
+
 def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=False, allow_prompt=True):
     if not os.path.exists(DB_PATH):
         if as_json:
@@ -671,10 +720,28 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     if with_mitigation:
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs)
 
+    affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
+    has_released = bool(raw_status_map.get("RELEASED"))
+    has_qa = bool(raw_status_map.get("IN QA"))
+    has_unpatched = bool(raw_status_map.get("AFFECTED"))
+
+    if has_released and not has_unpatched:
+        triage_status = "PATCHED (Patches released)"
+    elif has_released and has_unpatched:
+        triage_status = "PARTIALLY PATCHED (Patches available for core packages; some sub-packages/modules pending)"
+    elif has_qa:
+        triage_status = "IN QA (Patches in testing — mitigation recommended until release)"
+    elif has_unpatched:
+        triage_status = "UNPATCHED (No patches released yet — mitigation required)"
+    else:
+        triage_status = "NOT AFFECTED / NO OPEN VULNERABILITY"
+
     meta_payload = {
         "oval_timestamp": oval_ts_str,
         "web_last_modified": web_ts_str,
-        "stale_warning": is_stale
+        "stale_warning": is_stale,
+        "affected_sles_releases": affected_releases,
+        "triage_status": triage_status
     }
 
     if not raw_status_map:
@@ -756,6 +823,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         sys.exit(0)
 
     print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}\n")
+    rel_summary_str = ", ".join(affected_releases) if affected_releases else "None detected across SLES 12/15/16"
+    print(f"{CLR_BOLD}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
+    print(f"  {CLR_BOLD}Affected SLES Versions :{CLR_RESET} {rel_summary_str}")
+    print(f"  {CLR_BOLD}Release Status ({rel_arg}) :{CLR_RESET} {triage_status}")
+    if not has_released and (has_unpatched or has_qa) and not with_mitigation:
+        print(f"  {CLR_WARN}Recommended Next Step  :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
+    print()
 
     for st, p_dict in output_dict.items():
         colors = PALETTE.get(st, {"header": CLR_BOLD, "pkg": ""})
