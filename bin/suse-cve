@@ -396,6 +396,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     cvss_score = "N/A"
     attack_vector = "UNKNOWN"
     cwes = []
+    vendor_refs = []
 
     try:
         proc = subprocess.run(
@@ -424,6 +425,14 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
                     val = wd.get("value", "")
                     if val.startswith("CWE-"):
                         cwes.append(val)
+            seen_refs = set()
+            for ref in cve_obj.get("references", []):
+                r_url = ref.get("url", "").strip()
+                tags = ref.get("tags", [])
+                if r_url and r_url not in seen_refs:
+                    if any(d in r_url.lower() for d in ("suse.com", "github.com/advisories", "php.net", "mozilla.org", "openssh.com")) or any(t in tags for t in ("Vendor Advisory", "Mitigation")):
+                        seen_refs.add(r_url)
+                        vendor_refs.append(r_url)
     except Exception:
         pass
 
@@ -503,21 +512,39 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
             "cmd": f"lsmod | grep -i '{mod_hint}'  # If unused: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
         })
 
+    is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
+    is_php_pkg = any("php" in p for p in affected_pkgs) or "php" in combined_intel
+
+    if is_php_pkg:
+        suggestions.append({
+            "title": "Disable stateful apache2-mod_php and isolate PHP via PHP-FPM with single-request worker recycling (blocks OOM/longjmp heap reuse)",
+            "cmd": "a2dismod php7; a2dismod php8; systemctl enable --now php-fpm && grep -q '^pm.max_requests' /etc/php*/fpm/pool.d/www.conf || echo 'pm.max_requests = 1' >> /etc/php8/fpm/pool.d/www.conf"
+        })
+        suggestions.append({
+            "title": "Tighten PHP memory_limit and request size caps to prevent attacker-controlled OOM triggers",
+            "cmd": "grep -E '^(memory_limit|post_max_size|max_input_vars)' /etc/php*/*/php.ini  # Lower memory_limit (e.g. 128M) & reload php-fpm/apache2"
+        })
+
     if not suggestions:
-        if attack_vector == "NETWORK":
+        if is_kernel_pkg and attack_vector == "NETWORK":
             suggestions.append({
-                "title": "No generic sysctl/module workaround available — apply patch/livepatch and restrict exposed ports",
+                "title": "No generic sysctl/module workaround available -- apply kernel patch/livepatch and restrict exposed network ports",
                 "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is available; otherwise restrict ports via firewall-cmd"
             })
-        elif attack_vector == "LOCAL" or any("kernel" in p for p in affected_pkgs):
+        elif is_kernel_pkg or attack_vector == "LOCAL":
             suggestions.append({
                 "title": "Harden local access and kernel interfaces until patch/livepatch is applied",
                 "cmd": "sysctl -w user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
             })
+        elif attack_vector == "NETWORK":
+            suggestions.append({
+                "title": "Restrict network exposure of the affected service and restart running processes after patching",
+                "cmd": "firewall-cmd --list-all && zypper ps -s  # Restrict external access and verify services needing restart"
+            })
         else:
             suggestions.append({
-                "title": "No automated mitigation derivable — check Bugzilla and livepatch status",
-                "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is already available"
+                "title": "Apply vendor update and restart affected user-space processes",
+                "cmd": "zypper ps -s  # Identify running processes still using unpatched libraries"
             })
 
     return {
@@ -530,6 +557,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "redhat_statement": rh_info.get("statement", ""),
         "ubuntu_notes": ub_notes,
         "bugzilla": bugzilla_urls,
+        "vendor_refs": vendor_refs[:5],
         "suggestions": suggestions,
         "sources": [
             "NVD API v2.0 (Public Domain)",
@@ -1032,6 +1060,9 @@ def print_mitigation_block(mit: dict):
 
     if mit.get("bugzilla"):
         print(f"\n  {CLR_BOLD}SUSE Bugzilla:{CLR_RESET} {', '.join(mit['bugzilla'])}")
+
+    if mit.get("vendor_refs"):
+        print(f"  {CLR_BOLD}Vendor Advisories & KBs:{CLR_RESET} {', '.join(mit['vendor_refs'])}")
 
     print(f"\n  {CLR_BOLD}Recommended SLES Workarounds (before patch release):{CLR_RESET}")
     for idx, s in enumerate(mit["suggestions"], 1):
