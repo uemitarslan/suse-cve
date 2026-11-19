@@ -82,13 +82,17 @@ def clean_pkg_name(raw_name: str) -> str:
     return raw_name
 
 def filter_packages_for_platform(platform: str, pkgs: set) -> set:
-    """Filtert Livepatch/kGraft-Pakete aus Nicht-Live-Patching-Produkten heraus."""
-    if "live patching" not in platform.lower():
-        return {p for p in pkgs if p not in ("kgraft-patch", "kernel-livepatch")}
-    return pkgs
+    """Filtert kGraft/Livepatch-Noise aus SLES 12/15 Basis-Modulen, behält Livepatch aber bei SLES 16 / Micro 6."""
+    low = platform.lower()
+    if "live patching" in low or "16." in low or "micro 6" in low:
+        return pkgs
+    return {p for p in pkgs if p not in ("kgraft-patch", "kernel-livepatch")}
 
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
+    if s in ("all", "*"):
+        return "ALL", "", re.compile(r"(?:12|15|16)", re.IGNORECASE)
+
     m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
     major = m.group(1) if m else "15"
     sp = m.group(2) if (m and m.group(2)) else ""
@@ -131,6 +135,27 @@ def sync_oval_files():
             check=False
         )
     build_index()
+
+def extract_pkgs_from_cell(cell_html: str) -> set:
+    """Extrahiert alle sauberen Paketnamen aus einer HTML-Tabellenzelle."""
+    pkgs = set()
+    # Suche zuerst nach <code>-Blöcken oder Links
+    items = re.findall(r'<(?:code|a)[^>]*>(.*?)</(?:code|a)>', cell_html, re.DOTALL | re.IGNORECASE)
+    if not items:
+        # Fallback: Text nach Versionen (>=) aufteilen
+        plain = re.sub(r'<[^>]+>', ' ', cell_html)
+        plain = plain.replace("&gt;", ">").replace("&lt;", "<")
+        items = re.findall(r'([a-zA-Z0-9_.\-]+)\s*(?:>=|=|<)', plain)
+        if not items:
+            items = [plain.strip()]
+
+    for raw in items:
+        clean_str = re.sub(r'<[^>]+>', '', raw).replace("&gt;", ">").strip()
+        clean_str = re.sub(r'\s*(?:>=|=|<).*', '', clean_str).strip()
+        p = clean_pkg_name(clean_str)
+        if p and len(p) > 1 and not p.startswith("SUSE-"):
+            pkgs.add(p)
+    return pkgs
 
 def fetch_web_data(cve_id: str, platform_regex):
     url = f"https://www.suse.com/security/cve/{cve_id}.html"
@@ -176,38 +201,50 @@ def fetch_web_data(cve_id: str, platform_regex):
                 if prod and "product" not in prod.lower():
                     web_all_prods_for_major.add(prod)
                     if platform_regex.search(prod):
-                        pkgs = re.findall(r'<code[^>]*>(.*?)</code>', tds[1], re.DOTALL | re.IGNORECASE)
-                        if not pkgs:
-                            pkgs = re.findall(r'<li>(.*?)</li>', tds[1], re.DOTALL | re.IGNORECASE)
-                        for raw_p in pkgs:
-                            p_clean = clean_pkg_name(re.sub(r'\s*(?:>=|&gt;=).*', '', re.sub(r'<[^>]+>', '', raw_p)).strip())
-                            if p_clean:
-                                web_map.setdefault("IN QA", {}).setdefault(prod, set()).add(p_clean)
+                        pkgs = extract_pkgs_from_cell(tds[1])
+                        if pkgs:
+                            web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
 
-    # 2. Haupt-Statustabelle
+    # 2. Alle Tabellenzeilen durchgehen (Released-Patches Tabelle & Status-Tabelle)
     for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE):
         tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
-        if len(tds) >= 2:
-            prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
-            if not prod or "product" in prod.lower():
-                continue
+        if len(tds) < 2:
+            continue
 
-            found_status = None
-            pkg_name = ""
-            for td in tds[1:]:
-                clean_td = re.sub(r'<[^>]+>', ' ', td).strip()
-                norm = STATUS_ALIASES.get(clean_td.lower())
-                if norm or "cve-status" in td or clean_td.lower() in ("released", "affected", "not affected", "wont fix"):
-                    found_status = norm if norm else clean_td.upper()
-                else:
-                    cand_pkg = clean_pkg_name(clean_td)
-                    if cand_pkg and not pkg_name:
-                        pkg_name = cand_pkg
+        prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
+        if not prod or "product" in prod.lower():
+            continue
 
-            if found_status:
-                web_all_prods_for_major.add(prod)
-                if pkg_name and platform_regex.search(prod):
-                    web_map.setdefault(found_status, {}).setdefault(prod, set()).add(pkg_name)
+        # Cloud-Images/Container hier ausfiltern (stehen in eigener Sektion)
+        if prod.startswith("Container ") or prod.startswith("Image "):
+            continue
+
+        # Fall A: Tabelle 'List of Released Packages' (Spalte 3 enthält 'Patchnames:')
+        if len(tds) >= 3 and "patchnames:" in tds[2].lower():
+            web_all_prods_for_major.add(prod)
+            if platform_regex.search(prod):
+                pkgs = extract_pkgs_from_cell(tds[1])
+                if pkgs:
+                    web_map.setdefault("RELEASED", {}).setdefault(prod, set()).update(pkgs)
+            continue
+
+        # Fall B: Reguläre Statustabelle (Produkt | Paket | Status)
+        found_status = None
+        pkg_cell = ""
+        for td in tds[1:]:
+            clean_td = re.sub(r'<[^>]+>', ' ', td).strip()
+            norm = STATUS_ALIASES.get(clean_td.lower())
+            if norm or "cve-status" in td or clean_td.lower() in ("released", "affected", "not affected", "wont fix"):
+                found_status = norm if norm else clean_td.upper()
+            elif not pkg_cell:
+                pkg_cell = td
+
+        if found_status:
+            web_all_prods_for_major.add(prod)
+            if pkg_cell and platform_regex.search(prod):
+                pkgs = extract_pkgs_from_cell(pkg_cell)
+                if pkgs:
+                    web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
 
     return web_map, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
@@ -229,10 +266,10 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
         cve = f"CVE-{cve}"
 
     major, sp, sp_regex = build_platform_regex(rel_arg)
-    oval_ts_str, oval_dt = get_oval_timestamp(major)
+    oval_ts_str, oval_dt = get_oval_timestamp("15" if major == "ALL" else major)
     web_map, web_ts_str, web_dt, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
 
-    # Zeit-Diskrepanz zwischen OVAL und Web prüfen (berücksichtigt lokalen Download-Zeitstempel)
+    # Zeit-Diskrepanz zwischen OVAL und Web prüfen
     diff_hours = 0
     is_stale = False
     fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
@@ -247,7 +284,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
         if diff_hours > STALE_THRESHOLD_HOURS:
             is_stale = True
 
-    # Interaktive Sync-Abfrage, falls OVAL deutlich hinter Web liegt
     if is_stale and not as_json and allow_prompt and sys.stdin.isatty():
         days = int(diff_hours // 24)
         rem_h = int(diff_hours % 24)
@@ -271,7 +307,10 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT platform, package, status FROM cve_catalog WHERE cve=? AND major=?", (cve, major))
+    if major == "ALL":
+        cur.execute("SELECT platform, package, status FROM cve_catalog WHERE cve=?", (cve,))
+    else:
+        cur.execute("SELECT platform, package, status FROM cve_catalog WHERE cve=? AND major=?", (cve, major))
     rows = cur.fetchall()
     conn.close()
 
@@ -285,11 +324,17 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                 raw_status_map.setdefault(st, {}).setdefault(p, set()).update(pkg_set)
 
     if web_ok:
+        # Web-Daten einmischen (Web ist Single Source of Truth)
         for st, p_dict in web_map.items():
             for prod, pkgs in p_dict.items():
                 filtered_pkgs = filter_packages_for_platform(prod, pkgs)
                 if filtered_pkgs:
                     raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(filtered_pkgs)
+                    # Falls Webseite explizit AFFECTED oder IN QA meldet, veraltetes OVAL-RELEASED für dieses Paket entfernen
+                    if st in ("AFFECTED", "IN QA") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
+                        raw_status_map["RELEASED"][prod] -= filtered_pkgs
+                        if not raw_status_map["RELEASED"][prod]:
+                            del raw_status_map["RELEASED"][prod]
 
         if web_all_prods and "AFFECTED" in raw_status_map:
             matching_web = [p for p in web_all_prods if sp_regex.search(p)]
@@ -302,19 +347,20 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                 if not raw_status_map["AFFECTED"]:
                     del raw_status_map["AFFECTED"]
 
+    # Bereinigung: Nur wenn Web NICHT explizit AFFECTED sagt, bereits releaste OVAL-Pakete aus AFFECTED abziehen
+    web_affected = web_map.get("AFFECTED", {}) if web_ok else {}
     rel_dict = raw_status_map.get("RELEASED", {})
     qa_dict = raw_status_map.get("IN QA", {})
 
     if "AFFECTED" in raw_status_map:
         for p in list(raw_status_map["AFFECTED"].keys()):
+            explicit_web_aff = web_affected.get(p, set())
             if p in rel_dict:
-                raw_status_map["AFFECTED"][p] -= rel_dict[p]
-                if not raw_status_map["AFFECTED"][p]:
-                    del raw_status_map["AFFECTED"][p]
-            elif p in qa_dict:
-                raw_status_map["AFFECTED"][p] -= qa_dict[p]
-                if not raw_status_map["AFFECTED"][p]:
-                    del raw_status_map["AFFECTED"][p]
+                raw_status_map["AFFECTED"][p] -= (rel_dict[p] - explicit_web_aff)
+            if p in qa_dict:
+                raw_status_map["AFFECTED"][p] -= (qa_dict[p] - explicit_web_aff)
+            if not raw_status_map["AFFECTED"][p]:
+                del raw_status_map["AFFECTED"][p]
 
         if not raw_status_map["AFFECTED"]:
             del raw_status_map["AFFECTED"]
