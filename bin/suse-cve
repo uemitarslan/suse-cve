@@ -431,12 +431,6 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     combined_intel = " ".join([core_desc, rh_mit, " ".join(ub_notes)]).lower()
 
     suggestions = []
-
-    if any(k in combined_intel for k in ("tcp_v4_", "inet_opt", "ireq_opt", "ip_options", "tcp_syncookies")):
-        suggestions.append({
-            "title": "TCP SYN-Cookies aktivieren & exponierte TCP-Ports per Firewalld auf vertrauenswürdige Netze begrenzen",
-            "cmd": "sysctl -w net.ipv4.tcp_syncookies=1 && echo 'net.ipv4.tcp_syncookies = 1' >> /etc/sysctl.d/99-cve-mitigation.conf"
-        })
     if "io_uring" in combined_intel:
         suggestions.append({
             "title": "io_uring deaktivieren (SLES 15 SP4+ / 16)",
@@ -499,15 +493,15 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         })
 
     if not suggestions:
-        if attack_vector == "LOCAL" or any("kernel" in p for p in affected_pkgs):
+        if attack_vector == "NETWORK":
+            suggestions.append({
+                "title": "Kein allgemeiner Sysctl/Modul-Workaround verfügbar – Patch/Livepatch einspielen & exponierte Ports abschotten",
+                "cmd": "zypper lp  # Prüfen, ob bereits ein kumulativer Kernel-Livepatch (klp) verfügbar ist; sonst Ports per firewall-cmd begrenzen"
+            })
+        elif attack_vector == "LOCAL" or any("kernel" in p for p in affected_pkgs):
             suggestions.append({
                 "title": "Lokalen Zugriff & Kernel-Interfaces härten (bis Patch/Livepatch eingespielt ist)",
                 "cmd": "sysctl -w user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
-            })
-        elif attack_vector == "NETWORK":
-            suggestions.append({
-                "title": "Netzwerkexposition des betroffenen Dienstes per Firewalld einschränken",
-                "cmd": "ss -tulpn  # Betroffenen Port prüfen und per firewall-cmd auf Management-Netze begrenzen"
             })
         else:
             suggestions.append({
