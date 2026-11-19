@@ -6,6 +6,8 @@ import json
 import subprocess
 import bz2
 import sqlite3
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 try:
     from lxml import etree as ET
@@ -14,6 +16,16 @@ except ImportError:
 
 DATA_DIR = "/var/cache/suse-cve"
 DB_PATH = os.path.join(DATA_DIR, "suse_cve.db")
+STALE_THRESHOLD_HOURS = 48
+
+OVAL_URLS = [
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.16.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.16-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.15.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.15-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.12.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.12-affected.xml.bz2",
+]
 
 STATUS_ALIASES = {
     "rel": "RELEASED",
@@ -41,6 +53,7 @@ if USE_COLOR:
     CLR_RESET = "\033[0m"
     CLR_BOLD = "\033[1m"
     CLR_DIM = "\033[2m"
+    CLR_WARN = "\033[1;33m"
     PALETTE = {
         "RELEASED": {"header": "\033[1;32m", "pkg": "\033[32m"},
         "IN QA": {"header": "\033[1;33m", "pkg": "\033[33m"},
@@ -52,17 +65,27 @@ else:
     CLR_RESET = ""
     CLR_BOLD = ""
     CLR_DIM = ""
+    CLR_WARN = ""
     PALETTE = {}
 
 def clean_pkg_name(raw_name: str) -> str:
     if not raw_name or raw_name.lower() in ("open", "no", "is", "installed", "all"):
         return ""
-    if "livepatch" in raw_name.lower():
+    low = raw_name.lower()
+    if "livepatch" in low:
         return "kernel-livepatch"
+    if "kgraft-patch" in low:
+        return "kgraft-patch"
     m = re.match(r'^([a-zA-Z0-9_\-]+?)(?:-\d+.*|$)', raw_name)
     if m:
         return m.group(1).rstrip("-")
     return raw_name
+
+def filter_packages_for_platform(platform: str, pkgs: set) -> set:
+    """Filtert Livepatch/kGraft-Pakete aus Nicht-Live-Patching-Produkten heraus."""
+    if "live patching" not in platform.lower():
+        return {p for p in pkgs if p not in ("kgraft-patch", "kernel-livepatch")}
+    return pkgs
 
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
@@ -78,25 +101,42 @@ def build_platform_regex(rel_arg: str):
     
     return major, sp, regex
 
-def get_oval_timestamp(major: str) -> str:
+def get_oval_timestamp(major: str):
+    """Gibt (formatierter String, datetime-Objekt in UTC) zurück."""
     fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
     if not os.path.exists(fpath):
-        return "N/A"
+        return "N/A", None
     try:
         with bz2.open(fpath, "rb") as bz:
             chunk = bz.read(2048).decode("utf-8", errors="ignore")
             m = re.search(r"<(?:\w+:)?timestamp>([^<]+)</(?:\w+:)?timestamp>", chunk)
             if m:
-                ts = m.group(1).replace("T", " ")
-                return ts.split(".")[0]
+                raw_ts = m.group(1).split(".")[0]
+                dt = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                return dt.strftime("%Y-%m-%d %H:%M UTC"), dt
     except Exception:
         pass
-    return "N/A"
+    return "N/A", None
+
+def sync_oval_files():
+    """Lädt aktuelle OVAL-Dumps herunter und baut den Index neu auf."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    print(f"\n{CLR_BOLD}=== Starte manuellen OVAL-Sync ==={CLR_RESET}")
+    for url in OVAL_URLS:
+        fname = os.path.basename(url)
+        dest = os.path.join(DATA_DIR, fname)
+        print(f"Lade {fname} ...", flush=True)
+        subprocess.run(
+            ["curl", "-sL", "-z", dest, "-o", dest, url],
+            check=False
+        )
+    build_index()
 
 def fetch_web_data(cve_id: str, platform_regex):
     url = f"https://www.suse.com/security/cve/{cve_id}.html"
     web_map = {}
-    web_last_modified = "N/A"
+    web_last_modified_str = "N/A"
+    web_dt = None
     web_all_prods_for_major = set()
 
     try:
@@ -109,7 +149,12 @@ def fetch_web_data(cve_id: str, platform_regex):
         head_out = proc.stdout.decode("utf-8", errors="ignore")
         m_mod = re.findall(r"last-modified:\s*([^\r\n]+)", head_out, re.IGNORECASE)
         if m_mod:
-            web_last_modified = m_mod[-1].strip()
+            raw_web_ts = m_mod[-1].strip()
+            try:
+                web_dt = parsedate_to_datetime(raw_web_ts).astimezone(timezone.utc)
+                web_last_modified_str = web_dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                web_last_modified_str = raw_web_ts
 
         proc_body = subprocess.run(
             ["curl", "-sL", "--max-time", "10", url],
@@ -119,7 +164,7 @@ def fetch_web_data(cve_id: str, platform_regex):
         )
         html = proc_body.stdout.decode("utf-8", errors="ignore")
     except Exception:
-        return web_map, web_last_modified, web_all_prods_for_major, False
+        return web_map, web_last_modified_str, web_dt, web_all_prods_for_major, False
 
     # 1. 'List of packages in QA'
     m_qa = re.search(r'List of packages in QA.*?<table[^>]*>(.*?)</table>', html, re.DOTALL | re.IGNORECASE)
@@ -164,14 +209,19 @@ def fetch_web_data(cve_id: str, platform_regex):
                 if pkg_name and platform_regex.search(prod):
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).add(pkg_name)
 
-    return web_map, web_last_modified, web_all_prods_for_major, True
+    return web_map, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
-def query(rel_arg, cve_arg, status_filter=None, as_json=False):
+def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True):
     if not os.path.exists(DB_PATH):
         if as_json:
-            print(json.dumps({"error": "Local database not found. Run 'suse-cve --update' first."}))
-        else:
-            print(f"{CLR_BOLD}Lokale Datenbank nicht gefunden. Führe erst 'suse-cve --update' aus.{CLR_RESET}")
+            print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
+            sys.exit(1)
+        print(f"{CLR_BOLD}Lokale Datenbank nicht gefunden.{CLR_RESET}")
+        if allow_prompt and sys.stdin.isatty():
+            ans = input("Jetzt initial herunterladen und aufbauen? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes", "j", "ja"):
+                sync_oval_files()
+                return query(rel_arg, cve_arg, status_filter, as_json=as_json, allow_prompt=False)
         sys.exit(1)
 
     cve = cve_arg.upper().strip()
@@ -179,7 +229,40 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
         cve = f"CVE-{cve}"
 
     major, sp, sp_regex = build_platform_regex(rel_arg)
-    oval_ts = get_oval_timestamp(major)
+    oval_ts_str, oval_dt = get_oval_timestamp(major)
+    web_map, web_ts_str, web_dt, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
+
+    # Zeit-Diskrepanz zwischen OVAL und Web prüfen (berücksichtigt lokalen Download-Zeitstempel)
+    diff_hours = 0
+    is_stale = False
+    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
+    recently_synced = False
+    if os.path.exists(fpath):
+        file_age_hours = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(fpath)) / 3600.0
+        if file_age_hours < 24:
+            recently_synced = True
+
+    if oval_dt and web_dt and not recently_synced:
+        diff_hours = (web_dt - oval_dt).total_seconds() / 3600.0
+        if diff_hours > STALE_THRESHOLD_HOURS:
+            is_stale = True
+
+    # Interaktive Sync-Abfrage, falls OVAL deutlich hinter Web liegt
+    if is_stale and not as_json and allow_prompt and sys.stdin.isatty():
+        days = int(diff_hours // 24)
+        rem_h = int(diff_hours % 24)
+        age_str = f"{days}d {rem_h}h" if days > 0 else f"{rem_h}h"
+        print(f"{CLR_WARN}[WARN] Diskrepanz zu hoch! OVAL-Cache ({oval_ts_str}) ist {age_str} älter als Web ({web_ts_str}).{CLR_RESET}")
+        try:
+            ans = input("Jetzt manuellen OVAL-Sync durchführen? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+            print()
+
+        if ans in ("y", "yes", "j", "ja"):
+            sync_oval_files()
+            return query(rel_arg, cve_arg, status_filter, as_json=as_json, allow_prompt=False)
+        print()
 
     target_status = None
     if status_filter:
@@ -197,14 +280,16 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
         hits = [r for r in rows if sp_regex.search(r[0])]
         for p, pkgs, st in hits:
             pkg_set = set(clean_pkg_name(item) for item in pkgs.split(", ") if clean_pkg_name(item))
-            raw_status_map.setdefault(st, {}).setdefault(p, set()).update(pkg_set)
-
-    web_map, web_ts, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
+            pkg_set = filter_packages_for_platform(p, pkg_set)
+            if pkg_set:
+                raw_status_map.setdefault(st, {}).setdefault(p, set()).update(pkg_set)
 
     if web_ok:
         for st, p_dict in web_map.items():
             for prod, pkgs in p_dict.items():
-                raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(pkgs)
+                filtered_pkgs = filter_packages_for_platform(prod, pkgs)
+                if filtered_pkgs:
+                    raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(filtered_pkgs)
 
         if web_all_prods and "AFFECTED" in raw_status_map:
             matching_web = [p for p in web_all_prods if sp_regex.search(p)]
@@ -234,17 +319,23 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
         if not raw_status_map["AFFECTED"]:
             del raw_status_map["AFFECTED"]
 
+    meta_payload = {
+        "oval_timestamp": oval_ts_str,
+        "web_last_modified": web_ts_str,
+        "stale_warning": is_stale
+    }
+
     if not raw_status_map:
         if as_json:
             print(json.dumps({
                 "cve": cve,
                 "release": rel_arg,
                 "status": "NOT_AFFECTED_OR_UNKNOWN",
-                "meta": {"oval_timestamp": oval_ts, "web_last_modified": web_ts},
+                "meta": meta_payload,
                 "results": {}
             }, indent=2))
         else:
-            print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}")
+            print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
             print(f"NOT AFFECTED / UNKNOWN (Keine Einträge für {cve} unter {rel_arg})")
         sys.exit(0)
 
@@ -267,11 +358,11 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
                     "release": rel_arg,
                     "filter": target_status,
                     "status": "NONE",
-                    "meta": {"oval_timestamp": oval_ts, "web_last_modified": web_ts},
+                    "meta": meta_payload,
                     "results": {}
                 }, indent=2))
             else:
-                print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}")
+                print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
                 print(f"NONE (Keine Pakete mit Status '{target_status}' für {cve} auf {rel_arg})")
             sys.exit(1)
 
@@ -289,16 +380,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False):
             "major": major,
             "sp": sp,
             "filter": target_status if target_status else "ALL",
-            "meta": {
-                "oval_timestamp": oval_ts,
-                "web_last_modified": web_ts
-            },
+            "meta": meta_payload,
             "results": output_dict
         }
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
-    print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts} | WEB: {web_ts}{CLR_RESET}\n")
+    print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}\n")
 
     for st, p_dict in output_dict.items():
         colors = PALETTE.get(st, {"header": CLR_BOLD, "pkg": ""})
@@ -399,6 +487,9 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] in ("--update", "--reindex"):
         build_index()
         sys.exit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--sync":
+        sync_oval_files()
+        sys.exit(0)
 
     raw_args = sys.argv[1:]
     as_json = "--json" in raw_args
@@ -409,7 +500,7 @@ if __name__ == "__main__":
         print("Verwendung: suse-cve <release> <cve> [status_filter] [--json]")
         print("Beispiele : suse-cve 12sp5 CVE-2026-98432 rel")
         print("            suse-cve 15sp7 CVE-2026-98432")
-        print("            suse-cve 15sp7 CVE-2026-98432 --json")
+        print("            suse-cve --sync   (OVAL-Dumps herunterladen & Index neu bauen)")
         sys.exit(1)
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
