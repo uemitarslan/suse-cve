@@ -424,29 +424,33 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         description = rh_info["bugzilla_desc"]
 
     # Kombinierten Text (NVD + Red Hat Mitigation + Ubuntu Notes) für SLES-Kommando-Mapping auswerten
-    combined_intel = " ".join([
-        description,
-        rh_info.get("mitigation", ""),
-        rh_info.get("statement", ""),
-        " ".join(ub_notes)
-    ]).lower()
+    core_desc = description[:500]
+    rh_mit = rh_info.get("mitigation", "")
+    if "see the security bulletin" in rh_mit.lower():
+        rh_mit = ""
+    combined_intel = " ".join([core_desc, rh_mit, " ".join(ub_notes)]).lower()
 
     suggestions = []
 
+    if any(k in combined_intel for k in ("tcp_v4_", "inet_opt", "ireq_opt", "ip_options", "tcp_syncookies")):
+        suggestions.append({
+            "title": "TCP SYN-Cookies aktivieren & exponierte TCP-Ports per Firewalld auf vertrauenswürdige Netze begrenzen",
+            "cmd": "sysctl -w net.ipv4.tcp_syncookies=1 && echo 'net.ipv4.tcp_syncookies = 1' >> /etc/sysctl.d/99-cve-mitigation.conf"
+        })
     if "io_uring" in combined_intel:
         suggestions.append({
             "title": "io_uring deaktivieren (SLES 15 SP4+ / 16)",
-            "cmd": "sysctl -w kernel.io_uring_disabled=2 && echo 'kernel.io_uring_disabled = 2' > /etc/sysctl.d/99-cve-mitigation.conf"
+            "cmd": "sysctl -w kernel.io_uring_disabled=2 && echo 'kernel.io_uring_disabled = 2' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("nf_tables", "netfilter", "nft_", "iptables")):
         suggestions.append({
             "title": "Unprivilegierte User-Namespaces sperren (blockiert Netfilter/nf_tables Privilege Escalation)",
-            "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' > /etc/sysctl.d/99-cve-mitigation.conf"
+            "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("ebpf", "bpf_", "bpf verifier", "unprivileged_bpf")):
         suggestions.append({
             "title": "Unprivilegiertes eBPF deaktivieren",
-            "cmd": "sysctl -w kernel.unprivileged_bpf_disabled=1 && echo 'kernel.unprivileged_bpf_disabled = 1' > /etc/sysctl.d/99-cve-mitigation.conf"
+            "cmd": "sysctl -w kernel.unprivileged_bpf_disabled=1 && echo 'kernel.unprivileged_bpf_disabled = 1' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if "overlayfs" in combined_intel or "ovl_" in combined_intel:
         suggestions.append({
@@ -483,7 +487,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         if not any("max_user_namespaces" in s["cmd"] for s in suggestions):
             suggestions.append({
                 "title": "Unprivilegierte User-Namespaces einschränken (blockiert gängige Linux LPE-Exploit-Ketten)",
-                "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' > /etc/sysctl.d/99-cve-mitigation.conf"
+                "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
             })
 
     drv_matches = re.findall(r'(?:drivers|fs|net|sound)/[a-zA-Z0-9_/\-]+', description)
@@ -785,7 +789,7 @@ def print_mitigation_block(mit: dict):
         desc = desc[:337] + "..."
     print(f"  {CLR_BOLD}Summary:{CLR_RESET} {desc}")
 
-    if mit.get("redhat_mitigation"):
+    if mit.get("redhat_mitigation") and "see the security bulletin" not in mit["redhat_mitigation"].lower():
         print(f"\n  {CLR_BOLD}Red Hat Security Mitigation (CC BY 4.0):{CLR_RESET}")
         print(f"  {mit['redhat_mitigation']}")
 
