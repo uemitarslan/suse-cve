@@ -72,6 +72,7 @@ else:
     CLR_MAG = ""
     PALETTE = {}
 
+
 def clean_pkg_name(raw_name: str) -> str:
     if not raw_name or raw_name.lower() in ("open", "no", "is", "installed", "all"):
         return ""
@@ -85,12 +86,14 @@ def clean_pkg_name(raw_name: str) -> str:
         return m.group(1).rstrip("-")
     return raw_name
 
+
 def filter_packages_for_platform(platform: str, pkgs: set) -> set:
-    """Filtert kGraft/Livepatch-Noise aus SLES 12/15 Basis-Modulen, behält Livepatch aber bei SLES 16 / Micro 6."""
+    """Filter kGraft/Livepatch noise out of SLES 12/15 base modules, keeping Livepatch for SLES 16 / Micro 6."""
     low = platform.lower()
     if "live patching" in low or "16." in low or "micro 6" in low:
         return pkgs
     return {p for p in pkgs if p not in ("kgraft-patch", "kernel-livepatch")}
+
 
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
@@ -106,11 +109,12 @@ def build_platform_regex(rel_arg: str):
         regex = re.compile(pattern, re.IGNORECASE)
     else:
         regex = re.compile(rf"\b{major}\b", re.IGNORECASE)
-    
+
     return major, sp, regex
 
+
 def get_oval_timestamp(major: str):
-    """Gibt (formatierter String, datetime-Objekt in UTC) zurück."""
+    """Return (formatted timestamp string, UTC datetime object)."""
     fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
     if not os.path.exists(fpath):
         return "N/A", None
@@ -126,22 +130,24 @@ def get_oval_timestamp(major: str):
         pass
     return "N/A", None
 
+
 def sync_oval_files():
-    """Lädt aktuelle OVAL-Dumps herunter und baut den Index neu auf."""
+    """Download latest OVAL dumps and rebuild the local SQLite index."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    print(f"\n{CLR_BOLD}=== Starte manuellen OVAL-Sync ==={CLR_RESET}")
+    print(f"\n{CLR_BOLD}=== Starting manual OVAL sync ==={CLR_RESET}")
     for url in OVAL_URLS:
         fname = os.path.basename(url)
         dest = os.path.join(DATA_DIR, fname)
-        print(f"Lade {fname} ...", flush=True)
+        print(f"Downloading {fname} ...", flush=True)
         subprocess.run(
             ["curl", "-sL", "-z", dest, "-o", dest, url],
             check=False
         )
     build_index()
 
+
 def extract_pkgs_from_cell(cell_html: str) -> set:
-    """Extrahiert alle sauberen Paketnamen aus einer HTML-Tabellenzelle."""
+    """Extract normalized package names from an HTML table cell."""
     pkgs = set()
     items = re.findall(r'<(?:code|a)[^>]*>(.*?)</(?:code|a)>', cell_html, re.DOTALL | re.IGNORECASE)
     if not items:
@@ -159,8 +165,9 @@ def extract_pkgs_from_cell(cell_html: str) -> set:
             pkgs.add(p)
     return pkgs
 
+
 def extract_patchnames_from_cell(cell_html: str) -> list:
-    """Extrahiert SUSE-Patchnamen + Architekturen aus Spalte 3 ('Patchnames: ...')."""
+    """Extract SUSE patch IDs and architectures from column 3 ('Patchnames: ...')."""
     plain = re.sub(r'<[^>]+>', ' ', cell_html)
     plain = re.sub(r'\s+', ' ', plain).strip()
     matches = re.findall(r'(SUSE-[A-Za-z0-9_.\-]+)\s*\(([^)]+)\)', plain)
@@ -172,6 +179,7 @@ def extract_patchnames_from_cell(cell_html: str) -> list:
             archs = [a.strip() for a in arch_str.split(",") if a.strip()]
             results.append({"patch": p_id, "archs": archs})
     return results
+
 
 def fetch_web_data(cve_id: str, platform_regex):
     url = f"https://www.suse.com/security/cve/{cve_id}.html"
@@ -209,7 +217,7 @@ def fetch_web_data(cve_id: str, platform_regex):
     except Exception:
         return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, False
 
-    # Bugzilla-Links extrahieren (für --mitigate)
+    # Extract Bugzilla links (used by --mitigate)
     bz_matches = re.findall(r'https?://bugzilla\.suse\.com/show_bug\.cgi\?id=\d+', html, re.IGNORECASE)
     seen_bz = set()
     for b in bz_matches:
@@ -231,7 +239,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                         if pkgs:
                             web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
 
-    # 2. Alle Tabellenzeilen durchgehen (Released-Patches Tabelle & Status-Tabelle)
+    # 2. Parse all table rows (Released Packages table & Status table)
     for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE):
         tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
         if len(tds) < 2:
@@ -244,7 +252,7 @@ def fetch_web_data(cve_id: str, platform_regex):
         if prod.startswith("Container ") or prod.startswith("Image ") or prod.lower().startswith("opensuse"):
             continue
 
-        # Fall A: Tabelle 'List of Released Packages' (Spalte 3 enthält Patchnames / SUSE-Advisories)
+        # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE advisories)
         if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'SUSE-(?:SLE|SU|RU|FU)-', tds[2])):
             web_all_prods_for_major.add(prod)
             if platform_regex.search(prod):
@@ -260,7 +268,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                             existing.add(pt["patch"])
             continue
 
-        # Fall B: Reguläre Statustabelle (Produkt | Paket | Status)
+        # Case B: Standard status table (Product | Package | Status)
         found_status = None
         pkg_cell = ""
         for td in tds[1:]:
@@ -280,14 +288,14 @@ def fetch_web_data(cve_id: str, platform_regex):
 
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
+
 def fetch_cisa_kev(cve_id: str):
-    """Prüft im öffentlichen CISA KEV Katalog (Public Domain), ob die CVE aktiv ausgenutzt wird."""
+    """Check the public CISA KEV catalog (Public Domain) for active exploitation."""
     kev_url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     cache_file = os.path.join(DATA_DIR, "cisa_kev.json")
     data = None
 
     try:
-        # KEV-Feed max. alle 12h neu laden, um CLI-Latenz gering zu halten
         need_download = True
         if os.path.exists(cache_file):
             age_h = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(cache_file)) / 3600.0
@@ -320,8 +328,9 @@ def fetch_cisa_kev(cve_id: str):
                 }
     return {"exploited": False}
 
+
 def fetch_redhat_intel(cve_id: str) -> dict:
-    """Holt offizielle Mitigation- & Statement-Texte aus der Red Hat Security Data API (CC BY 4.0)."""
+    """Fetch official mitigation and statement texts from Red Hat Security Data API (CC BY 4.0)."""
     rh_url = f"https://access.redhat.com/hydra/rest/securitydata/cve/{cve_id}.json"
     res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url}
     try:
@@ -355,8 +364,9 @@ def fetch_redhat_intel(cve_id: str) -> dict:
         pass
     return res
 
+
 def fetch_ubuntu_notes(cve_id: str) -> list:
-    """Holt Security-Maintainer-Notizen aus dem öffentlichen Ubuntu CVE Tracker (CC BY-SA)."""
+    """Fetch security maintainer notes from the public Ubuntu CVE Tracker (CC BY-SA)."""
     ub_url = f"https://ubuntu.com/security/cves/{cve_id}.json"
     notes = []
     try:
@@ -378,8 +388,9 @@ def fetch_ubuntu_notes(cve_id: str) -> list:
         pass
     return notes[:3]
 
+
 def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set) -> dict:
-    """Kombiniert CISA KEV, Red Hat Security Data (CC BY 4.0), Ubuntu Tracker, NVD & SUSE Bugzilla."""
+    """Combine CISA KEV, Red Hat Security Data (CC BY 4.0), Ubuntu Tracker, NVD, and SUSE Bugzilla."""
     nvd_url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
     description = ""
     cvss_score = "N/A"
@@ -423,7 +434,6 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     if not description and rh_info.get("bugzilla_desc"):
         description = rh_info["bugzilla_desc"]
 
-    # Kombinierten Text (NVD + Red Hat Mitigation + Ubuntu Notes) für SLES-Kommando-Mapping auswerten
     core_desc = description[:500]
     rh_mit = rh_info.get("mitigation", "")
     if "see the security bulletin" in rh_mit.lower():
@@ -431,56 +441,57 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     combined_intel = " ".join([core_desc, rh_mit, " ".join(ub_notes)]).lower()
 
     suggestions = []
+
     if "io_uring" in combined_intel:
         suggestions.append({
-            "title": "io_uring deaktivieren (SLES 15 SP4+ / 16)",
+            "title": "Disable io_uring (SLES 15 SP4+ / 16)",
             "cmd": "sysctl -w kernel.io_uring_disabled=2 && echo 'kernel.io_uring_disabled = 2' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("nf_tables", "netfilter", "nft_", "iptables")):
         suggestions.append({
-            "title": "Unprivilegierte User-Namespaces sperren (blockiert Netfilter/nf_tables Privilege Escalation)",
+            "title": "Restrict unprivileged user namespaces (blocks Netfilter/nf_tables privilege escalation)",
             "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("ebpf", "bpf_", "bpf verifier", "unprivileged_bpf")):
         suggestions.append({
-            "title": "Unprivilegiertes eBPF deaktivieren",
+            "title": "Disable unprivileged eBPF",
             "cmd": "sysctl -w kernel.unprivileged_bpf_disabled=1 && echo 'kernel.unprivileged_bpf_disabled = 1' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if "overlayfs" in combined_intel or "ovl_" in combined_intel:
         suggestions.append({
-            "title": "Unprivilegierte User-Namespaces & OverlayFS-Mounts einschränken",
+            "title": "Restrict unprivileged user namespaces and OverlayFS mounts",
             "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'blacklist overlay' > /etc/modprobe.d/cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("bluetooth", "bluez", "rfcomm", "hci_")):
         suggestions.append({
-            "title": "Bluetooth-Kernelmodule auf Servern blacklisten",
-            "cmd": "printf 'install bluetooth /bin/true\ninstall btusb /bin/true\n' > /etc/modprobe.d/cve-bluetooth.conf"
+            "title": "Blacklist Bluetooth kernel modules on servers",
+            "cmd": "printf 'install bluetooth /bin/true\\ninstall btusb /bin/true\\n' > /etc/modprobe.d/cve-bluetooth.conf"
         })
     if "logingracetime" in combined_intel or "sshd" in combined_intel or "openssh" in combined_intel:
         suggestions.append({
-            "title": "OpenSSH LoginGraceTime auf 0 setzen (verhindert Pre-Auth Race-Conditions wie regreSSHion)",
+            "title": "Set OpenSSH LoginGraceTime to 0 (mitigates pre-auth race conditions such as regreSSHion)",
             "cmd": "echo 'LoginGraceTime 0' > /etc/ssh/sshd_config.d/99-cve-mitigation.conf && systemctl reload sshd"
         })
     for proto in ("tipc", "rds", "sctp", "dccp", "nfc"):
         if re.search(rf"\b{proto}\b", combined_intel):
             suggestions.append({
-                "title": f"Netzwerkprotokoll '{proto}' per modprobe blacklisten",
+                "title": f"Blacklist uncommon network protocol '{proto}' via modprobe",
                 "cmd": f"echo 'install {proto} /bin/true' > /etc/modprobe.d/cve-{proto}.conf && modprobe -r {proto} 2>/dev/null || true"
             })
     if any(k in combined_intel for k in ("af_can", "can_raw", "can protocol", "controller area network")):
         suggestions.append({
-            "title": "CAN-Bus Kernelmodul 'can' per modprobe blacklisten",
+            "title": "Blacklist CAN bus kernel module 'can' via modprobe",
             "cmd": "echo 'install can /bin/true' > /etc/modprobe.d/cve-can.conf && modprobe -r can 2>/dev/null || true"
         })
     if any(k in combined_intel for k in ("cifs", "smb3", "ksmbd", "nfsd")):
         suggestions.append({
-            "title": "SMB/NFS-Ports auf nicht benötigten Interfaces per Firewalld abschotten",
-            "cmd": "firewall-cmd --list-services  # Zugriff auf vertrauenswürdige Zonen begrenzen"
+            "title": "Restrict SMB/NFS ports on untrusted interfaces via firewalld",
+            "cmd": "firewall-cmd --list-services  # Verify active samba/nfs services and restrict to trusted zones"
         })
     if any(k in combined_intel for k in ("use-after-free", "heap-based buffer overflow", "out-of-bounds", "privilege escalation", "user namespace")):
         if not any("max_user_namespaces" in s["cmd"] for s in suggestions):
             suggestions.append({
-                "title": "Unprivilegierte User-Namespaces einschränken (blockiert gängige Linux LPE-Exploit-Ketten)",
+                "title": "Restrict unprivileged user namespaces (blocks common Linux LPE exploit chains)",
                 "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
             })
 
@@ -488,25 +499,25 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     if drv_matches:
         mod_hint = os.path.basename(drv_matches[0]).replace(".c", "")
         suggestions.append({
-            "title": f"Betroffenes Kernel-Subsystem ({drv_matches[0]}) prüfen / blacklisten",
-            "cmd": f"lsmod | grep -i '{mod_hint}'  # Falls ungenutzt: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
+            "title": f"Inspect or blacklist affected kernel subsystem ({drv_matches[0]})",
+            "cmd": f"lsmod | grep -i '{mod_hint}'  # If unused: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
         })
 
     if not suggestions:
         if attack_vector == "NETWORK":
             suggestions.append({
-                "title": "Kein allgemeiner Sysctl/Modul-Workaround verfügbar – Patch/Livepatch einspielen & exponierte Ports abschotten",
-                "cmd": "zypper lp  # Prüfen, ob bereits ein kumulativer Kernel-Livepatch (klp) verfügbar ist; sonst Ports per firewall-cmd begrenzen"
+                "title": "No generic sysctl/module workaround available — apply patch/livepatch and restrict exposed ports",
+                "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is available; otherwise restrict ports via firewall-cmd"
             })
         elif attack_vector == "LOCAL" or any("kernel" in p for p in affected_pkgs):
             suggestions.append({
-                "title": "Lokalen Zugriff & Kernel-Interfaces härten (bis Patch/Livepatch eingespielt ist)",
+                "title": "Harden local access and kernel interfaces until patch/livepatch is applied",
                 "cmd": "sysctl -w user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
             })
         else:
             suggestions.append({
-                "title": "Keine automatische Mitigation ableitbar – Bugzilla & Livepatch-Status prüfen",
-                "cmd": "zypper lp  # Prüfen, ob bereits ein kumulativer Kernel-Livepatch (klp) bereitsteht"
+                "title": "No automated mitigation derivable — check Bugzilla and livepatch status",
+                "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is already available"
             })
 
     return {
@@ -514,7 +525,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "attack_vector": attack_vector,
         "cwes": sorted(list(set(cwes))),
         "cisa_kev": kev_info,
-        "description": description if description else "Keine öffentliche NVD/Vendor-Beschreibung verfügbar (möglicherweise noch unter Embargo / Reserved).",
+        "description": description if description else "No public NVD/vendor description available yet (possibly still under embargo / reserved).",
         "redhat_mitigation": rh_info.get("mitigation", ""),
         "redhat_statement": rh_info.get("statement", ""),
         "ubuntu_notes": ub_notes,
@@ -528,15 +539,16 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         ]
     }
 
+
 def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=False, allow_prompt=True):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
             sys.exit(1)
-        print(f"{CLR_BOLD}Lokale Datenbank nicht gefunden.{CLR_RESET}")
+        print(f"{CLR_BOLD}Local database not found.{CLR_RESET}")
         if allow_prompt and sys.stdin.isatty():
-            ans = input("Jetzt initial herunterladen und aufbauen? [Y/n]: ").strip().lower()
-            if ans in ("", "y", "yes", "j", "ja"):
+            ans = input("Download and build initial OVAL index now? [Y/n]: ").strip().lower()
+            if ans in ("", "y", "yes"):
                 sync_oval_files()
                 return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
         sys.exit(1)
@@ -567,14 +579,14 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         days = int(diff_hours // 24)
         rem_h = int(diff_hours % 24)
         age_str = f"{days}d {rem_h}h" if days > 0 else f"{rem_h}h"
-        print(f"{CLR_WARN}[WARN] Diskrepanz zu hoch! OVAL-Cache ({oval_ts_str}) ist {age_str} älter als Web ({web_ts_str}).{CLR_RESET}")
+        print(f"{CLR_WARN}[WARN] Cache discrepancy detected! OVAL cache ({oval_ts_str}) is {age_str} older than Web ({web_ts_str}).{CLR_RESET}")
         try:
-            ans = input("Jetzt manuellen OVAL-Sync durchführen? [y/N]: ").strip().lower()
+            ans = input("Run manual OVAL sync now? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             ans = "n"
             print()
 
-        if ans in ("y", "yes", "j", "ja"):
+        if ans in ("y", "yes"):
             sync_oval_files()
             return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
         print()
@@ -680,7 +692,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             print(json.dumps(payload, indent=2))
         else:
             print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
-            print(f"NOT AFFECTED / UNKNOWN (Keine Einträge für {cve} unter {rel_arg})")
+            print(f"NOT AFFECTED / UNKNOWN (No entries found for {cve} on {rel_arg})")
             if mitigation_data:
                 print_mitigation_block(mitigation_data)
         sys.exit(0)
@@ -713,7 +725,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 print(json.dumps(payload, indent=2))
             else:
                 print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
-                print(f"NONE (Keine Pakete mit Status '{target_status}' für {cve} auf {rel_arg})")
+                print(f"NONE (No packages with status '{target_status}' for {cve} on {rel_arg})")
                 if mitigation_data:
                     print_mitigation_block(mitigation_data)
             sys.exit(1)
@@ -757,7 +769,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{p}{CLR_RESET} -> {pkgs_formatted}")
         print()
 
-    # [PATCHES] Sektion
     if sorted_patches and (not target_status or target_status == "RELEASED"):
         print(f"{CLR_CYAN}[PATCHES]{CLR_RESET}")
         for prod, p_list in sorted_patches.items():
@@ -768,12 +779,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     if mitigation_data:
         print_mitigation_block(mitigation_data)
 
+
 def print_mitigation_block(mit: dict):
     print(f"{CLR_MAG}[MITIGATION & MULTI-SOURCE ADVISORY INTEL]{CLR_RESET}")
 
     kev = mit.get("cisa_kev") or {}
     if kev.get("exploited"):
-        print(f"  [1;31m[!] CISA KEV ALERT: AKTIV AUSGENUTZT (seit {kev.get('date_added')} | Ransomware: {kev.get('ransomware')})[0m")
+        print(f"  \033[1;31m[!] CISA KEV ALERT: ACTIVELY EXPLOITED (added {kev.get('date_added')} | Ransomware: {kev.get('ransomware')})\033[0m")
 
     cwe_str = f" | {', '.join(mit['cwes'])}" if mit["cwes"] else ""
     print(f"  {CLR_BOLD}CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
@@ -802,15 +814,16 @@ def print_mitigation_block(mit: dict):
     if mit.get("bugzilla"):
         print(f"\n  {CLR_BOLD}SUSE Bugzilla:{CLR_RESET} {', '.join(mit['bugzilla'])}")
 
-    print(f"\n  {CLR_BOLD}Empfohlene SLES-Workarounds (vor Patch-Release):{CLR_RESET}")
+    print(f"\n  {CLR_BOLD}Recommended SLES Workarounds (before patch release):{CLR_RESET}")
     for idx, s in enumerate(mit["suggestions"], 1):
         print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
         print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
 
-    print(f"\n  {CLR_DIM}Quellen: {', '.join(mit.get('sources', []))}{CLR_RESET}\n")
+    print(f"\n  {CLR_DIM}Sources: {', '.join(mit.get('sources', []))}{CLR_RESET}\n")
+
 
 def build_index():
-    print(f"=== Baue OVAL-Index auf (SLES 12, 15, 16) ===")
+    print("=== Building local OVAL index (SLES 12, 15, 16) ===")
     tmp_db = DB_PATH + ".tmp"
     if os.path.exists(tmp_db):
         os.remove(tmp_db)
@@ -834,7 +847,7 @@ def build_index():
         fpath = os.path.join(DATA_DIR, fname)
         if not os.path.exists(fpath):
             continue
-        print(f"Lese {fname} ...", flush=True)
+        print(f"Indexing {fname} ...", flush=True)
         batch = []
         with bz2.open(fpath, "rb") as bz:
             context = ET.iterparse(bz, events=("end",))
@@ -890,7 +903,8 @@ def build_index():
 
     conn.close()
     os.replace(tmp_db, DB_PATH)
-    print(f"Index fertig! {total_count} Einträge indiziert.\n")
+    print(f"Index built successfully! {total_count} entries indexed.\n")
+
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] in ("--update", "--reindex"):
@@ -912,11 +926,11 @@ if __name__ == "__main__":
             raw_args.remove(flag)
 
     if len(raw_args) < 2:
-        print("Verwendung: suse-cve <release> <cve> [status_filter] [--mitigate] [--json]")
-        print("Beispiele : suse-cve 15sp7 CVE-2026-98432")
-        print("            suse-cve 15sp7 CVE-2026-98432 --mitigate")
-        print("            suse-cve 12sp5 CVE-2026-98432 rel --json")
-        print("            suse-cve --sync   (OVAL-Dumps herunterladen & Index neu bauen)")
+        print("Usage   : suse-cve <release> <cve> [status_filter] [--mitigate] [--json]")
+        print("Examples: suse-cve 15sp7 CVE-2026-98432")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate")
+        print("          suse-cve all CVE-2026-98432 rel --json")
+        print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
         sys.exit(1)
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
