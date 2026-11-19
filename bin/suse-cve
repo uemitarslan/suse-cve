@@ -47,23 +47,6 @@ STATUS_ALIASES = {
     "wontfix": "WONT FIX",
 }
 
-SLES_LIFECYCLE_FALLBACK = {
-    "SLES 12 SP1": {"general_eol": "2017-10-31", "ltss_eol": "2020-10-31"},
-    "SLES 12 SP2": {"general_eol": "2018-03-31", "ltss_eol": "2021-03-31"},
-    "SLES 12 SP3": {"general_eol": "2019-06-30", "ltss_eol": "2022-06-30"},
-    "SLES 12 SP4": {"general_eol": "2020-06-30", "ltss_eol": "2023-06-30"},
-    "SLES 12 SP5": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31"},
-    "SLES 15 SP1": {"general_eol": "2021-01-31", "ltss_eol": "2024-01-31"},
-    "SLES 15 SP2": {"general_eol": "2021-12-31", "ltss_eol": "2024-12-31"},
-    "SLES 15 SP3": {"general_eol": "2022-12-31", "ltss_eol": "2025-12-31"},
-    "SLES 15 SP4": {"general_eol": "2023-12-31", "ltss_eol": "2026-12-31"},
-    "SLES 15 SP5": {"general_eol": "2024-12-31", "ltss_eol": "2027-07-31"},
-    "SLES 15 SP6": {"general_eol": "2025-12-31", "ltss_eol": "2028-07-31"},
-    "SLES 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2031-07-31"},
-    "SLES 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2033-10-31"},
-    "SLES 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2034-10-31"},
-}
-
 USE_COLOR = sys.stdout.isatty()
 
 if USE_COLOR:
@@ -105,6 +88,7 @@ def clean_pkg_name(raw_name: str) -> str:
 
 
 def filter_packages_for_platform(platform: str, pkgs: set) -> set:
+    """Filter kGraft/Livepatch noise out of SLES 12/15 base modules, keeping Livepatch for SLES 16 / Micro 6."""
     low = platform.lower()
     if "live patching" in low or "16." in low or "micro 6" in low:
         return pkgs
@@ -130,6 +114,7 @@ def build_platform_regex(rel_arg: str):
 
 
 def get_oval_timestamp(major: str):
+    """Return (formatted timestamp string, UTC datetime object)."""
     fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
     if not os.path.exists(fpath):
         return "N/A", None
@@ -147,17 +132,22 @@ def get_oval_timestamp(major: str):
 
 
 def sync_oval_files():
+    """Download latest OVAL dumps and rebuild the local SQLite index."""
     os.makedirs(DATA_DIR, exist_ok=True)
     print(f"\n{CLR_BOLD}=== Starting manual OVAL sync ==={CLR_RESET}")
     for url in OVAL_URLS:
         fname = os.path.basename(url)
         dest = os.path.join(DATA_DIR, fname)
         print(f"Downloading {fname} ...", flush=True)
-        subprocess.run(["curl", "-sL", "-z", dest, "-o", dest, url], check=False)
+        subprocess.run(
+            ["curl", "-sL", "-z", dest, "-o", dest, url],
+            check=False
+        )
     build_index()
 
 
 def extract_pkgs_from_cell(cell_html: str) -> set:
+    """Extract normalized package names from an HTML table cell."""
     pkgs = set()
     items = re.findall(r'<(?:code|a)[^>]*>(.*?)</(?:code|a)>', cell_html, re.DOTALL | re.IGNORECASE)
     if not items:
@@ -177,6 +167,7 @@ def extract_pkgs_from_cell(cell_html: str) -> set:
 
 
 def extract_patchnames_from_cell(cell_html: str) -> list:
+    """Extract SUSE patch IDs and architectures from column 3 ('Patchnames: ...')."""
     plain = re.sub(r'<[^>]+>', ' ', cell_html)
     plain = re.sub(r'\s+', ' ', plain).strip()
     matches = re.findall(r'(SUSE-[A-Za-z0-9_.\-]+)\s*\(([^)]+)\)', plain)
@@ -226,6 +217,7 @@ def fetch_web_data(cve_id: str, platform_regex):
     except Exception:
         return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, False
 
+    # Extract Bugzilla links (used by --mitigate)
     bz_matches = re.findall(r'https?://bugzilla\.suse\.com/show_bug\.cgi\?id=\d+', html, re.IGNORECASE)
     seen_bz = set()
     for b in bz_matches:
@@ -233,6 +225,7 @@ def fetch_web_data(cve_id: str, platform_regex):
             seen_bz.add(b)
             bugzilla_urls.append(b)
 
+    # 1. 'List of packages in QA'
     m_qa = re.search(r'List of packages in QA.*?<table[^>]*>(.*?)</table>', html, re.DOTALL | re.IGNORECASE)
     if m_qa:
         for row in re.findall(r'<tr[^>]*>(.*?)</tr>', m_qa.group(1), re.DOTALL | re.IGNORECASE):
@@ -246,6 +239,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                         if pkgs:
                             web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
 
+    # 2. Parse all table rows (Released Packages table & Status table)
     for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE):
         tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
         if len(tds) < 2:
@@ -258,6 +252,7 @@ def fetch_web_data(cve_id: str, platform_regex):
         if prod.startswith("Container ") or prod.startswith("Image ") or prod.lower().startswith("opensuse"):
             continue
 
+        # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE advisories)
         if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'SUSE-(?:SLE|SU|RU|FU)-', tds[2])):
             web_all_prods_for_major.add(prod)
             if platform_regex.search(prod):
@@ -273,6 +268,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                             existing.add(pt["patch"])
             continue
 
+        # Case B: Standard status table (Product | Package | Status)
         found_status = None
         pkg_cell = ""
         for td in tds[1:]:
@@ -294,6 +290,7 @@ def fetch_web_data(cve_id: str, platform_regex):
 
 
 def fetch_cisa_kev(cve_id: str):
+    """Check the public CISA KEV catalog (Public Domain) for active exploitation."""
     kev_url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     cache_file = os.path.join(DATA_DIR, "cisa_kev.json")
     data = None
@@ -333,6 +330,7 @@ def fetch_cisa_kev(cve_id: str):
 
 
 def fetch_redhat_intel(cve_id: str) -> dict:
+    """Fetch official mitigation and statement texts from Red Hat Security Data API (CC BY 4.0)."""
     rh_url = f"https://access.redhat.com/hydra/rest/securitydata/cve/{cve_id}.json"
     res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url}
     try:
@@ -368,6 +366,7 @@ def fetch_redhat_intel(cve_id: str) -> dict:
 
 
 def fetch_ubuntu_notes(cve_id: str) -> list:
+    """Fetch security maintainer notes from the public Ubuntu CVE Tracker (CC BY-SA)."""
     ub_url = f"https://ubuntu.com/security/cves/{cve_id}.json"
     notes = []
     try:
@@ -391,6 +390,7 @@ def fetch_ubuntu_notes(cve_id: str) -> list:
 
 
 def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set) -> dict:
+    """Combine CISA KEV, Red Hat Security Data (CC BY 4.0), Ubuntu Tracker, NVD, and SUSE Bugzilla."""
     nvd_url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
     description = ""
     cvss_score = "N/A"
@@ -540,7 +540,29 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     }
 
 
+
+
+# Official SUSE Linux Enterprise Lifecycle Reference (General Support & LTSS end dates)
+SLES_LIFECYCLE_FALLBACK = {
+    "SLES 12 SP1": {"general_eol": "2017-10-31", "ltss_eol": "2020-10-31"},
+    "SLES 12 SP2": {"general_eol": "2018-03-31", "ltss_eol": "2021-03-31"},
+    "SLES 12 SP3": {"general_eol": "2019-06-30", "ltss_eol": "2022-06-30"},
+    "SLES 12 SP4": {"general_eol": "2020-06-30", "ltss_eol": "2023-06-30"},
+    "SLES 12 SP5": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31"},
+    "SLES 15 SP1": {"general_eol": "2021-01-31", "ltss_eol": "2024-01-31"},
+    "SLES 15 SP2": {"general_eol": "2021-12-31", "ltss_eol": "2024-12-31"},
+    "SLES 15 SP3": {"general_eol": "2022-12-31", "ltss_eol": "2025-12-31"},
+    "SLES 15 SP4": {"general_eol": "2023-12-31", "ltss_eol": "2026-12-31"},
+    "SLES 15 SP5": {"general_eol": "2024-12-31", "ltss_eol": "2027-07-31"},
+    "SLES 15 SP6": {"general_eol": "2025-12-31", "ltss_eol": "2028-07-31"},
+    "SLES 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2031-07-31"},
+    "SLES 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2033-10-31"},
+    "SLES 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2034-10-31"},
+}
+
+
 def load_sles_lifecycle() -> dict:
+    """Load SLES lifecycle data from cached endoflife.date API (7-day TTL) merged with built-in SUSE matrix."""
     lifecycle = {k: dict(v) for k, v in SLES_LIFECYCLE_FALLBACK.items()}
     cache_file = os.path.join(DATA_DIR, "sles_lifecycle.json")
     api_url = "https://endoflife.date/api/sles.json"
@@ -589,6 +611,7 @@ def load_sles_lifecycle() -> dict:
 
 
 def evaluate_release_lifecycle(sles_tag: str, lifecycle_map: dict) -> dict:
+    """Evaluate current lifecycle phase (GENERAL_SUPPORT, LTSS_ONLY, EOL, or UNKNOWN) against today's UTC date."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     info = lifecycle_map.get(sles_tag)
     if not info:
@@ -620,12 +643,14 @@ def evaluate_release_lifecycle(sles_tag: str, lifecycle_map: dict) -> dict:
 
 
 def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict) -> list:
+    """Return a clean sorted list of affected SLES major/minor releases (e.g. 'SLES 15 SP5', 'SLES 16.0')."""
     releases = set()
 
     def extract_sles_tag(text: str):
         low = text.lower()
         if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
             return None
+        # Match SLES / SLE 12, 15, 16 with optional SP or minor version
         m = re.search(r'(?:suse linux enterprise|sle[s]?)[^0-9]*\b(12|15|16)(?:[.\s-]*(?:sp|service pack)?\s*(\d+))?', low)
         if not m:
             return None
@@ -637,6 +662,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
             return f"SLES {maj} SP{minor}"
         return f"SLES {maj}"
 
+    # 1. Check local SQLite OVAL database across all majors (12, 15, 16)
     if os.path.exists(DB_PATH):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -647,6 +673,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
                 releases.add(tag)
         conn.close()
 
+    # 2. Merge live web products (excluding NOT AFFECTED)
     not_aff_prods = set(web_map.get("NOT AFFECTED", {}).keys())
     for prod in web_all_prods:
         if prod in not_aff_prods:
@@ -655,6 +682,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         if tag:
             releases.add(tag)
 
+    # Remove generic 'SLES 15' if specific SPs like 'SLES 15 SP5' exist
     for maj in ("12", "15"):
         if any(r.startswith(f"SLES {maj} SP") for r in releases):
             releases.discard(f"SLES {maj}")
@@ -937,13 +965,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         print(f"  {CLR_BOLD}Affected SLES Versions     :{CLR_RESET} None detected across SLES 12/15/16")
 
     if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
-        lc_color = "\033[1;31m" if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else "")
+        lc_color = "[1;31m" if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else "")
         print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{target_lifecycle['label']}{CLR_RESET}")
 
     print(f"  {CLR_BOLD}Release Status ({rel_arg})     :{CLR_RESET} {triage_status}")
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
-        print(f"  \033[1;31m[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.\033[0m")
+        print(f"  [1;31m[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.[0m")
     elif not has_released and (has_unpatched or has_qa) and not with_mitigation:
         print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
