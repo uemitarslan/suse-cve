@@ -54,6 +54,8 @@ if USE_COLOR:
     CLR_BOLD = "\033[1m"
     CLR_DIM = "\033[2m"
     CLR_WARN = "\033[1;33m"
+    CLR_CYAN = "\033[1;36m"
+    CLR_MAG = "\033[1;35m"
     PALETTE = {
         "RELEASED": {"header": "\033[1;32m", "pkg": "\033[32m"},
         "IN QA": {"header": "\033[1;33m", "pkg": "\033[33m"},
@@ -66,6 +68,8 @@ else:
     CLR_BOLD = ""
     CLR_DIM = ""
     CLR_WARN = ""
+    CLR_CYAN = ""
+    CLR_MAG = ""
     PALETTE = {}
 
 def clean_pkg_name(raw_name: str) -> str:
@@ -139,10 +143,8 @@ def sync_oval_files():
 def extract_pkgs_from_cell(cell_html: str) -> set:
     """Extrahiert alle sauberen Paketnamen aus einer HTML-Tabellenzelle."""
     pkgs = set()
-    # Suche zuerst nach <code>-Blöcken oder Links
     items = re.findall(r'<(?:code|a)[^>]*>(.*?)</(?:code|a)>', cell_html, re.DOTALL | re.IGNORECASE)
     if not items:
-        # Fallback: Text nach Versionen (>=) aufteilen
         plain = re.sub(r'<[^>]+>', ' ', cell_html)
         plain = plain.replace("&gt;", ">").replace("&lt;", "<")
         items = re.findall(r'([a-zA-Z0-9_.\-]+)\s*(?:>=|=|<)', plain)
@@ -157,9 +159,25 @@ def extract_pkgs_from_cell(cell_html: str) -> set:
             pkgs.add(p)
     return pkgs
 
+def extract_patchnames_from_cell(cell_html: str) -> list:
+    """Extrahiert SUSE-Patchnamen + Architekturen aus Spalte 3 ('Patchnames: ...')."""
+    plain = re.sub(r'<[^>]+>', ' ', cell_html)
+    plain = re.sub(r'\s+', ' ', plain).strip()
+    matches = re.findall(r'(SUSE-[A-Za-z0-9_.\-]+)\s*\(([^)]+)\)', plain)
+    results = []
+    seen = set()
+    for p_id, arch_str in matches:
+        if p_id not in seen:
+            seen.add(p_id)
+            archs = [a.strip() for a in arch_str.split(",") if a.strip()]
+            results.append({"patch": p_id, "archs": archs})
+    return results
+
 def fetch_web_data(cve_id: str, platform_regex):
     url = f"https://www.suse.com/security/cve/{cve_id}.html"
     web_map = {}
+    patch_map = {}
+    bugzilla_urls = []
     web_last_modified_str = "N/A"
     web_dt = None
     web_all_prods_for_major = set()
@@ -189,7 +207,15 @@ def fetch_web_data(cve_id: str, platform_regex):
         )
         html = proc_body.stdout.decode("utf-8", errors="ignore")
     except Exception:
-        return web_map, web_last_modified_str, web_dt, web_all_prods_for_major, False
+        return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, False
+
+    # Bugzilla-Links extrahieren (für --mitigate)
+    bz_matches = re.findall(r'https?://bugzilla\.suse\.com/show_bug\.cgi\?id=\d+', html, re.IGNORECASE)
+    seen_bz = set()
+    for b in bz_matches:
+        if b not in seen_bz:
+            seen_bz.add(b)
+            bugzilla_urls.append(b)
 
     # 1. 'List of packages in QA'
     m_qa = re.search(r'List of packages in QA.*?<table[^>]*>(.*?)</table>', html, re.DOTALL | re.IGNORECASE)
@@ -215,7 +241,6 @@ def fetch_web_data(cve_id: str, platform_regex):
         if not prod or "product" in prod.lower():
             continue
 
-        # Cloud-Images/Container hier ausfiltern (stehen in eigener Sektion)
         if prod.startswith("Container ") or prod.startswith("Image "):
             continue
 
@@ -226,6 +251,13 @@ def fetch_web_data(cve_id: str, platform_regex):
                 pkgs = extract_pkgs_from_cell(tds[1])
                 if pkgs:
                     web_map.setdefault("RELEASED", {}).setdefault(prod, set()).update(pkgs)
+                patches = extract_patchnames_from_cell(tds[2])
+                if patches:
+                    existing = {item["patch"] for item in patch_map.get(prod, [])}
+                    for pt in patches:
+                        if pt["patch"] not in existing:
+                            patch_map.setdefault(prod, []).append(pt)
+                            existing.add(pt["patch"])
             continue
 
         # Fall B: Reguläre Statustabelle (Produkt | Paket | Status)
@@ -246,9 +278,136 @@ def fetch_web_data(cve_id: str, platform_regex):
                 if pkgs:
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
 
-    return web_map, web_last_modified_str, web_dt, web_all_prods_for_major, True
+    return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
-def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True):
+def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set) -> dict:
+    """Holt NVD-Metadaten + Beschreibung und leitet konkrete SLES-Workarounds ab."""
+    nvd_url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+    description = ""
+    cvss_score = "N/A"
+    attack_vector = "UNKNOWN"
+    cwes = []
+
+    try:
+        proc = subprocess.run(
+            ["curl", "-sL", "--max-time", "10", "-H", "User-Agent: suse-cve-cli/1.0", nvd_url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        data = json.loads(proc.stdout.decode("utf-8", errors="ignore"))
+        vulns = data.get("vulnerabilities", [])
+        if vulns:
+            cve_obj = vulns[0].get("cve", {})
+            for d in cve_obj.get("descriptions", []):
+                if d.get("lang") == "en":
+                    description = d.get("value", "")
+                    break
+            metrics = cve_obj.get("metrics", {})
+            for m_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                if m_key in metrics and metrics[m_key]:
+                    cvss_data = metrics[m_key][0].get("cvssData", {})
+                    cvss_score = f"{cvss_data.get('baseScore', 'N/A')} ({cvss_data.get('baseSeverity', '')})"
+                    attack_vector = cvss_data.get("attackVector", "UNKNOWN")
+                    break
+            for w in cve_obj.get("weaknesses", []):
+                for wd in w.get("description", []):
+                    val = wd.get("value", "")
+                    if val.startswith("CWE-"):
+                        cwes.append(val)
+    except Exception:
+        pass
+
+    desc_low = description.lower()
+    suggestions = []
+
+    # 1. Subsystem-spezifische SLES-Mitigations ableiten
+    if "io_uring" in desc_low:
+        suggestions.append({
+            "title": "io_uring deaktivieren (SLES 15 SP4+ / 16)",
+            "cmd": "sysctl -w kernel.io_uring_disabled=2 && echo 'kernel.io_uring_disabled = 2' > /etc/sysctl.d/99-cve-mitigation.conf"
+        })
+    if any(k in desc_low for k in ("nf_tables", "netfilter", "nft_", "iptables")):
+        suggestions.append({
+            "title": "Unprivilegierte User-Namespaces sperren (verhindert Netfilter/nf_tables Privilege Escalation)",
+            "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' > /etc/sysctl.d/99-cve-mitigation.conf"
+        })
+    if any(k in desc_low for k in ("ebpf", "bpf_", "bpf verifier")):
+        suggestions.append({
+            "title": "Unprivilegiertes eBPF deaktivieren",
+            "cmd": "sysctl -w kernel.unprivileged_bpf_disabled=1 && echo 'kernel.unprivileged_bpf_disabled = 1' > /etc/sysctl.d/99-cve-mitigation.conf"
+        })
+    if "overlayfs" in desc_low or "ovl_" in desc_low:
+        suggestions.append({
+            "title": "Unprivilegierte User-Namespaces & OverlayFS-Mounts einschränken",
+            "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'blacklist overlay' > /etc/modprobe.d/cve-mitigation.conf"
+        })
+    if any(k in desc_low for k in ("bluetooth", "bluez", "rfcomm", "hci_")):
+        suggestions.append({
+            "title": "Bluetooth-Kernelmodule auf Servern blacklisten",
+            "cmd": "printf 'install bluetooth /bin/true\\ninstall btusb /bin/true\\n' > /etc/modprobe.d/cve-bluetooth.conf"
+        })
+    if any(k in desc_low for k in ("tipc", "rds", "sctp", "dccp", "can ", "nfc", "appletalk", "decnet")):
+        for proto in ("tipc", "rds", "sctp", "dccp", "can", "nfc"):
+            if proto in desc_low:
+                suggestions.append({
+                    "title": f"Selten genutztes Netzwerkprotokoll '{proto}' blockieren",
+                    "cmd": f"echo 'install {proto} /bin/true' > /etc/modprobe.d/cve-{proto}.conf && modprobe -r {proto} 2>/dev/null || true"
+                })
+    if any(k in desc_low for k in ("cifs", "smb3", "ksmbd", "nfsd")):
+        suggestions.append({
+            "title": "SMB/NFS-Ports auf nicht benötigten Interfaces per Firewalld abschotten",
+            "cmd": "firewall-cmd --list-services  # Prüfen, ob samba/nfs aktiv ist, ggf. auf vertrauenswürdige Zonen begrenzen"
+        })
+    if "sshd" in desc_low or "openssh" in desc_low:
+        suggestions.append({
+            "title": "SSH-Angriffsfläche reduzieren (LoginGraceTime & AllowUsers)",
+            "cmd": "echo 'LoginGraceTime 0' > /etc/ssh/sshd_config.d/99-cve-mitigation.conf && systemctl reload sshd"
+        })
+    if any(k in desc_low for k in ("use-after-free", "heap-based buffer overflow", "out-of-bounds", "privilege escalation", "user namespace")):
+        if not any("max_user_namespaces" in s["cmd"] for s in suggestions):
+            suggestions.append({
+                "title": "Unprivilegierte User-Namespaces einschränken (häufigster Vektor für Linux LPE-Exploits)",
+                "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' > /etc/sysctl.d/99-cve-mitigation.conf"
+            })
+
+    # Modul-Namen aus NVD-Beschreibung extrahieren (z. B. drivers/net/ethernet/...)
+    drv_matches = re.findall(r'(?:drivers|fs|net|sound)/[a-zA-Z0-9_/\-]+', description)
+    if drv_matches:
+        mod_hint = os.path.basename(drv_matches[0]).replace(".c", "")
+        suggestions.append({
+            "title": f"Betroffenes Kernel-Subsystem erkannt ({drv_matches[0]}) – Modul prüfen/blacklisten falls ungenutzt",
+            "cmd": f"lsmod | grep -i '{mod_hint}'  # Falls ungenutzt: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
+        })
+
+    # Fallback-Empfehlungen nach Angriffsvektor, falls NVD noch im 'Awaiting Analysis' Status ist
+    if not suggestions:
+        if attack_vector == "LOCAL" or any("kernel" in p for p in affected_pkgs):
+            suggestions.append({
+                "title": "Lokalen Zugriff & Namespaces härten (bis Kernel-Patch/Livepatch verfügbar)",
+                "cmd": "sysctl -w user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
+            })
+        elif attack_vector == "NETWORK":
+            suggestions.append({
+                "title": "Netzwerkexposition des betroffenen Dienstes per Firewalld einschränken",
+                "cmd": "ss -tulpn  # Betroffenen Port prüfen und Zugriff per firewall-cmd auf Management-Netze begrenzen"
+            })
+        else:
+            suggestions.append({
+                "title": "NVD-Detailanalyse noch ausstehend (Reserved/Awaiting Analysis) – Bugzilla & Livepatch prüfen",
+                "cmd": "zypper lp  # Prüfen, ob bereits ein kumulativer Kernel-Livepatch (klp) bereitsteht"
+            })
+
+    return {
+        "cvss": cvss_score,
+        "attack_vector": attack_vector,
+        "cwes": sorted(list(set(cwes))),
+        "description": description if description else "Keine öffentliche NVD-Beschreibung verfügbar (möglicherweise noch unter Embargo / Reserved).",
+        "bugzilla": bugzilla_urls,
+        "suggestions": suggestions
+    }
+
+def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=False, allow_prompt=True):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -258,7 +417,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
             ans = input("Jetzt initial herunterladen und aufbauen? [Y/n]: ").strip().lower()
             if ans in ("", "y", "yes", "j", "ja"):
                 sync_oval_files()
-                return query(rel_arg, cve_arg, status_filter, as_json=as_json, allow_prompt=False)
+                return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
         sys.exit(1)
 
     cve = cve_arg.upper().strip()
@@ -267,12 +426,11 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
 
     major, sp, sp_regex = build_platform_regex(rel_arg)
     oval_ts_str, oval_dt = get_oval_timestamp("15" if major == "ALL" else major)
-    web_map, web_ts_str, web_dt, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
+    web_map, patch_map, bugzilla_urls, web_ts_str, web_dt, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
 
-    # Zeit-Diskrepanz zwischen OVAL und Web prüfen
     diff_hours = 0
     is_stale = False
-    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
+    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{'15' if major == 'ALL' else major}.xml.bz2")
     recently_synced = False
     if os.path.exists(fpath):
         file_age_hours = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(fpath)) / 3600.0
@@ -297,7 +455,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
 
         if ans in ("y", "yes", "j", "ja"):
             sync_oval_files()
-            return query(rel_arg, cve_arg, status_filter, as_json=as_json, allow_prompt=False)
+            return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
         print()
 
     target_status = None
@@ -324,13 +482,11 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                 raw_status_map.setdefault(st, {}).setdefault(p, set()).update(pkg_set)
 
     if web_ok:
-        # Web-Daten einmischen (Web ist Single Source of Truth)
         for st, p_dict in web_map.items():
             for prod, pkgs in p_dict.items():
                 filtered_pkgs = filter_packages_for_platform(prod, pkgs)
                 if filtered_pkgs:
                     raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(filtered_pkgs)
-                    # Falls Webseite explizit AFFECTED oder IN QA meldet, veraltetes OVAL-RELEASED für dieses Paket entfernen
                     if st in ("AFFECTED", "IN QA") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
                         raw_status_map["RELEASED"][prod] -= filtered_pkgs
                         if not raw_status_map["RELEASED"][prod]:
@@ -347,7 +503,6 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                 if not raw_status_map["AFFECTED"]:
                     del raw_status_map["AFFECTED"]
 
-    # Bereinigung: Nur wenn Web NICHT explizit AFFECTED sagt, bereits releaste OVAL-Pakete aus AFFECTED abziehen
     web_affected = web_map.get("AFFECTED", {}) if web_ok else {}
     rel_dict = raw_status_map.get("RELEASED", {})
     qa_dict = raw_status_map.get("IN QA", {})
@@ -365,6 +520,15 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
         if not raw_status_map["AFFECTED"]:
             del raw_status_map["AFFECTED"]
 
+    all_affected_pkgs = set()
+    for p_dict in raw_status_map.values():
+        for pkgs in p_dict.values():
+            all_affected_pkgs.update(pkgs)
+
+    mitigation_data = None
+    if with_mitigation:
+        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs)
+
     meta_payload = {
         "oval_timestamp": oval_ts_str,
         "web_last_modified": web_ts_str,
@@ -373,16 +537,22 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
 
     if not raw_status_map:
         if as_json:
-            print(json.dumps({
+            payload = {
                 "cve": cve,
                 "release": rel_arg,
                 "status": "NOT_AFFECTED_OR_UNKNOWN",
                 "meta": meta_payload,
-                "results": {}
-            }, indent=2))
+                "results": {},
+                "patches": {}
+            }
+            if mitigation_data:
+                payload["mitigation"] = mitigation_data
+            print(json.dumps(payload, indent=2))
         else:
             print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
             print(f"NOT AFFECTED / UNKNOWN (Keine Einträge für {cve} unter {rel_arg})")
+            if mitigation_data:
+                print_mitigation_block(mitigation_data)
         sys.exit(0)
 
     output_dict = {}
@@ -399,17 +569,23 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
 
         if not output_dict:
             if as_json:
-                print(json.dumps({
+                payload = {
                     "cve": cve,
                     "release": rel_arg,
                     "filter": target_status,
                     "status": "NONE",
                     "meta": meta_payload,
-                    "results": {}
-                }, indent=2))
+                    "results": {},
+                    "patches": {}
+                }
+                if mitigation_data:
+                    payload["mitigation"] = mitigation_data
+                print(json.dumps(payload, indent=2))
             else:
                 print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}")
                 print(f"NONE (Keine Pakete mit Status '{target_status}' für {cve} auf {rel_arg})")
+                if mitigation_data:
+                    print_mitigation_block(mitigation_data)
             sys.exit(1)
 
     else:
@@ -419,6 +595,8 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                     p: sorted(list(pkgs)) for p, pkgs in sorted(raw_status_map[st].items()) if pkgs
                 }
 
+    sorted_patches = {k: patch_map[k] for k in sorted(patch_map.keys())}
+
     if as_json:
         payload = {
             "cve": cve,
@@ -427,8 +605,11 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
             "sp": sp,
             "filter": target_status if target_status else "ALL",
             "meta": meta_payload,
-            "results": output_dict
+            "results": output_dict,
+            "patches": sorted_patches
         }
+        if mitigation_data:
+            payload["mitigation"] = mitigation_data
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
@@ -445,6 +626,46 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, allow_prompt=True
                 pkgs_formatted = f"{p_color}{', '.join(pkgs)}{CLR_RESET}"
                 print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{p}{CLR_RESET} -> {pkgs_formatted}")
         print()
+
+    # [PATCHES] Sektion mit direkt kopierbarem zypper-Befehl
+    if sorted_patches and (not target_status or target_status == "RELEASED"):
+        print(f"{CLR_CYAN}[PATCHES]{CLR_RESET}")
+        all_patch_ids = []
+        seen_pids = set()
+        for prod, p_list in sorted_patches.items():
+            formatted_entries = []
+            for item in p_list:
+                pid = item["patch"]
+                archs = ",".join(item["archs"])
+                formatted_entries.append(f"{pid} ({archs})")
+                if pid not in seen_pids:
+                    seen_pids.add(pid)
+                    all_patch_ids.append(pid)
+            print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{prod}{CLR_RESET} -> {', '.join(formatted_entries)}")
+
+        if all_patch_ids:
+            print(f"\n  {CLR_DIM}Quick-Install (alle Module):{CLR_RESET}")
+            print(f"  {CLR_BOLD}zypper in -t patch {' '.join(all_patch_ids)}{CLR_RESET}")
+        print()
+
+    if mitigation_data:
+        print_mitigation_block(mitigation_data)
+
+def print_mitigation_block(mit: dict):
+    print(f"{CLR_MAG}[MITIGATION & ADVISORY INTEL]{CLR_RESET}")
+    cwe_str = f" | {', '.join(mit['cwes'])}" if mit["cwes"] else ""
+    print(f"  {CLR_BOLD}CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
+    desc = mit["description"]
+    if len(desc) > 320:
+        desc = desc[:317] + "..."
+    print(f"  {CLR_BOLD}Summary:{CLR_RESET} {desc}")
+    if mit["bugzilla"]:
+        print(f"  {CLR_BOLD}SUSE Bugzilla:{CLR_RESET} {', '.join(mit['bugzilla'])}")
+    print(f"\n  {CLR_BOLD}Empfohlene SLES-Workarounds (vor Patch-Release):{CLR_RESET}")
+    for idx, s in enumerate(mit["suggestions"], 1):
+        print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
+        print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
+    print()
 
 def build_index():
     print(f"=== Baue OVAL-Index auf (SLES 12, 15, 16) ===")
@@ -542,12 +763,19 @@ if __name__ == "__main__":
     if as_json:
         raw_args.remove("--json")
 
+    with_mitigation = False
+    for flag in ("--mitigate", "-m", "--mitigation"):
+        if flag in raw_args:
+            with_mitigation = True
+            raw_args.remove(flag)
+
     if len(raw_args) < 2:
-        print("Verwendung: suse-cve <release> <cve> [status_filter] [--json]")
-        print("Beispiele : suse-cve 12sp5 CVE-2026-98432 rel")
-        print("            suse-cve 15sp7 CVE-2026-98432")
+        print("Verwendung: suse-cve <release> <cve> [status_filter] [--mitigate] [--json]")
+        print("Beispiele : suse-cve 15sp7 CVE-2026-98432")
+        print("            suse-cve 15sp7 CVE-2026-98432 --mitigate")
+        print("            suse-cve 12sp5 CVE-2026-98432 rel --json")
         print("            suse-cve --sync   (OVAL-Dumps herunterladen & Index neu bauen)")
         sys.exit(1)
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
-    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json)
+    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation)
