@@ -541,7 +541,6 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
 
 
-
 # Official SUSE Linux Enterprise Lifecycle Reference (General Support & LTSS end dates)
 SLES_LIFECYCLE_FALLBACK = {
     "SLES 12 SP1": {"general_eol": "2017-10-31", "ltss_eol": "2020-10-31"},
@@ -650,8 +649,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         low = text.lower()
         if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
             return None
-        # Match SLES / SLE 12, 15, 16 with optional SP or minor version
-        m = re.search(r'(?:suse linux enterprise|sle[s]?)[^0-9]*\b(12|15|16)(?:[.\s-]*(?:sp|service pack)?\s*(\d+))?', low)
+        m = re.search(r'(?:suse linux enterprise|sle[s]?)[^0-9]*(12|15|16)(?:[.\s-]*(?:sp|service pack)?\s*(\d+))?', low)
         if not m:
             return None
         maj = m.group(1)
@@ -662,7 +660,6 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
             return f"SLES {maj} SP{minor}"
         return f"SLES {maj}"
 
-    # 1. Check local SQLite OVAL database across all majors (12, 15, 16)
     if os.path.exists(DB_PATH):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -673,7 +670,6 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
                 releases.add(tag)
         conn.close()
 
-    # 2. Merge live web products (excluding NOT AFFECTED)
     not_aff_prods = set(web_map.get("NOT AFFECTED", {}).keys())
     for prod in web_all_prods:
         if prod in not_aff_prods:
@@ -682,7 +678,6 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         if tag:
             releases.add(tag)
 
-    # Remove generic 'SLES 15' if specific SPs like 'SLES 15 SP5' exist
     for maj in ("12", "15"):
         if any(r.startswith(f"SLES {maj} SP") for r in releases):
             releases.discard(f"SLES {maj}")
