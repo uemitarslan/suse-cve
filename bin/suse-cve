@@ -541,6 +541,107 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
 
 
+
+# Official SUSE Linux Enterprise Lifecycle Reference (General Support & LTSS end dates)
+SLES_LIFECYCLE_FALLBACK = {
+    "SLES 12 SP1": {"general_eol": "2017-10-31", "ltss_eol": "2020-10-31"},
+    "SLES 12 SP2": {"general_eol": "2018-03-31", "ltss_eol": "2021-03-31"},
+    "SLES 12 SP3": {"general_eol": "2019-06-30", "ltss_eol": "2022-06-30"},
+    "SLES 12 SP4": {"general_eol": "2020-06-30", "ltss_eol": "2023-06-30"},
+    "SLES 12 SP5": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31"},
+    "SLES 15 SP1": {"general_eol": "2021-01-31", "ltss_eol": "2024-01-31"},
+    "SLES 15 SP2": {"general_eol": "2021-12-31", "ltss_eol": "2024-12-31"},
+    "SLES 15 SP3": {"general_eol": "2022-12-31", "ltss_eol": "2025-12-31"},
+    "SLES 15 SP4": {"general_eol": "2023-12-31", "ltss_eol": "2026-12-31"},
+    "SLES 15 SP5": {"general_eol": "2024-12-31", "ltss_eol": "2027-07-31"},
+    "SLES 15 SP6": {"general_eol": "2025-12-31", "ltss_eol": "2028-07-31"},
+    "SLES 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2031-07-31"},
+    "SLES 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2033-10-31"},
+    "SLES 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2034-10-31"},
+}
+
+
+def load_sles_lifecycle() -> dict:
+    """Load SLES lifecycle data from cached endoflife.date API (7-day TTL) merged with built-in SUSE matrix."""
+    lifecycle = {k: dict(v) for k, v in SLES_LIFECYCLE_FALLBACK.items()}
+    cache_file = os.path.join(DATA_DIR, "sles_lifecycle.json")
+    api_url = "https://endoflife.date/api/sles.json"
+
+    try:
+        need_fetch = True
+        if os.path.exists(cache_file):
+            age_days = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(cache_file)) / 86400.0
+            if age_days < 7:
+                need_fetch = False
+
+        if need_fetch:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            subprocess.run(
+                ["curl", "-sL", "--max-time", "5", "-o", cache_file, api_url],
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
+
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8", errors="ignore") as f:
+                entries = json.load(f)
+            if isinstance(entries, list):
+                for item in entries:
+                    cyc = str(item.get("cycle", "")).strip()
+                    eol = item.get("eol")
+                    ext = item.get("extendedSupport")
+                    if not cyc:
+                        continue
+                    if cyc.startswith("16"):
+                        key = f"SLES {cyc}" if "." in cyc else f"SLES {cyc}.0"
+                    elif "-" in cyc:
+                        maj, sp_part = cyc.split("-", 1)
+                        key = f"SLES {maj} {sp_part.upper()}"
+                    else:
+                        continue
+                    entry = lifecycle.setdefault(key, {})
+                    if isinstance(eol, str) and len(eol) >= 10:
+                        entry["general_eol"] = eol[:10]
+                    if isinstance(ext, str) and len(ext) >= 10:
+                        entry["ltss_eol"] = ext[:10]
+    except Exception:
+        pass
+
+    return lifecycle
+
+
+def evaluate_release_lifecycle(sles_tag: str, lifecycle_map: dict) -> dict:
+    """Evaluate current lifecycle phase (GENERAL_SUPPORT, LTSS_ONLY, EOL, or UNKNOWN) against today's UTC date."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    info = lifecycle_map.get(sles_tag)
+    if not info:
+        return {"state": "UNKNOWN", "label": "Unknown lifecycle", "general_eol": "N/A", "ltss_eol": "N/A"}
+
+    gen_eol = info.get("general_eol", "")
+    ltss_eol = info.get("ltss_eol", "")
+
+    if gen_eol and today <= gen_eol:
+        return {
+            "state": "GENERAL_SUPPORT",
+            "label": f"General Support (until {gen_eol})",
+            "general_eol": gen_eol,
+            "ltss_eol": ltss_eol or "N/A"
+        }
+    if ltss_eol and today <= ltss_eol:
+        return {
+            "state": "LTSS_ONLY",
+            "label": f"LTSS Only (General EOL {gen_eol}; LTSS until {ltss_eol})",
+            "general_eol": gen_eol or "N/A",
+            "ltss_eol": ltss_eol
+        }
+    return {
+        "state": "EOL",
+        "label": f"END OF LIFE (General EOL {gen_eol}, LTSS ended {ltss_eol or gen_eol})",
+        "general_eol": gen_eol or "N/A",
+        "ltss_eol": ltss_eol or "N/A"
+    }
+
+
 def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict) -> list:
     """Return a clean sorted list of affected SLES major/minor releases (e.g. 'SLES 15 SP5', 'SLES 16.0')."""
     releases = set()
@@ -720,7 +821,34 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     if with_mitigation:
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs)
 
+    lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
+
+    active_supported_releases = []
+    ltss_releases = []
+    eol_releases = []
+    release_lifecycle_details = {}
+
+    for r_tag in affected_releases:
+        lc = evaluate_release_lifecycle(r_tag, lifecycle_map)
+        release_lifecycle_details[r_tag] = lc
+        if lc["state"] == "GENERAL_SUPPORT":
+            active_supported_releases.append(r_tag)
+        elif lc["state"] == "LTSS_ONLY":
+            ltss_releases.append(f"{r_tag} (LTSS until {lc['ltss_eol']})")
+        elif lc["state"] == "EOL":
+            eol_releases.append(r_tag)
+        else:
+            active_supported_releases.append(r_tag)
+
+    target_sles_tag = None
+    if major != "ALL":
+        if major == "16":
+            target_sles_tag = f"SLES 16.{sp if sp else '0'}"
+        elif sp:
+            target_sles_tag = f"SLES {major} SP{sp}"
+    target_lifecycle = evaluate_release_lifecycle(target_sles_tag, lifecycle_map) if target_sles_tag else None
+
     has_released = bool(raw_status_map.get("RELEASED"))
     has_qa = bool(raw_status_map.get("IN QA"))
     has_unpatched = bool(raw_status_map.get("AFFECTED"))
@@ -741,6 +869,8 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         "web_last_modified": web_ts_str,
         "stale_warning": is_stale,
         "affected_sles_releases": affected_releases,
+        "affected_sles_lifecycle": release_lifecycle_details,
+        "target_lifecycle": target_lifecycle,
         "triage_status": triage_status
     }
 
@@ -823,12 +953,27 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         sys.exit(0)
 
     print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}\n")
-    rel_summary_str = ", ".join(affected_releases) if affected_releases else "None detected across SLES 12/15/16"
     print(f"{CLR_BOLD}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
-    print(f"  {CLR_BOLD}Affected SLES Versions :{CLR_RESET} {rel_summary_str}")
-    print(f"  {CLR_BOLD}Release Status ({rel_arg}) :{CLR_RESET} {triage_status}")
-    if not has_released and (has_unpatched or has_qa) and not with_mitigation:
-        print(f"  {CLR_WARN}Recommended Next Step  :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
+    if affected_releases:
+        if active_supported_releases:
+            print(f"  {CLR_BOLD}Affected (General Support) :{CLR_RESET} {', '.join(active_supported_releases)}")
+        if ltss_releases:
+            print(f"  {CLR_BOLD}Affected (LTSS Required)   :{CLR_RESET} {', '.join(ltss_releases)}")
+        if eol_releases:
+            print(f"  {CLR_BOLD}Affected (End-of-Life)     :{CLR_RESET} {', '.join(eol_releases)}")
+    else:
+        print(f"  {CLR_BOLD}Affected SLES Versions     :{CLR_RESET} None detected across SLES 12/15/16")
+
+    if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
+        lc_color = "[1;31m" if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else "")
+        print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{target_lifecycle['label']}{CLR_RESET}")
+
+    print(f"  {CLR_BOLD}Release Status ({rel_arg})     :{CLR_RESET} {triage_status}")
+
+    if target_lifecycle and target_lifecycle["state"] == "EOL":
+        print(f"  [1;31m[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.[0m")
+    elif not has_released and (has_unpatched or has_qa) and not with_mitigation:
+        print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
 
     for st, p_dict in output_dict.items():
