@@ -1194,34 +1194,49 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
+    c_rel = PALETTE["RELEASED"]["pkg"]
+    c_qa = PALETTE["IN QA"]["pkg"]
+    c_aff = PALETTE["AFFECTED"]["pkg"]
+    c_aff_b = PALETTE["AFFECTED"]["header"]
+    c_na = PALETTE["NOT AFFECTED"]["pkg"]
+
+    if triage_status.startswith("PATCHED") or triage_status.startswith("NOT AFFECTED"):
+        st_color = PALETTE["RELEASED"]["header"]
+    elif triage_status.startswith("PARTIALLY PATCHED") or triage_status.startswith("IN QA"):
+        st_color = PALETTE["IN QA"]["header"]
+    elif triage_status.startswith("IN PROGRESS"):
+        st_color = CLR_CYAN
+    else:
+        st_color = c_aff_b
+
     print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}\n")
-    print(f"{CLR_BOLD}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
+    print(f"{CLR_MAG}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
     if affected_releases:
         if active_supported_releases:
-            print(f"  {CLR_BOLD}Affected (General Support) :{CLR_RESET} {', '.join(active_supported_releases)}")
+            print(f"  {CLR_BOLD}Affected (General Support) :{CLR_RESET} {c_aff}{', '.join(active_supported_releases)}{CLR_RESET}")
         if ltss_releases:
-            print(f"  {CLR_BOLD}Affected (LTSS Required)   :{CLR_RESET} {', '.join(ltss_releases)}")
+            print(f"  {CLR_BOLD}Affected (LTSS Required)   :{CLR_RESET} {c_qa}{', '.join(ltss_releases)}{CLR_RESET}")
         if eol_releases:
-            print(f"  {CLR_BOLD}Affected (End-of-Life)     :{CLR_RESET} {', '.join(eol_releases)}")
+            print(f"  {CLR_BOLD}Affected (End-of-Life)     :{CLR_RESET} {c_aff_b}{', '.join(eol_releases)}{CLR_RESET}")
     else:
-        print(f"  {CLR_BOLD}Affected SLES Versions     :{CLR_RESET} None detected across SLES 12/15/16")
+        print(f"  {CLR_BOLD}Affected SLES Versions     :{CLR_RESET} {c_na}None detected across SLES 12/15/16{CLR_RESET}")
 
     if major == "ALL":
         if patched_releases_list:
-            print(f"  {CLR_BOLD}Patched Releases           :{CLR_RESET} {', '.join(patched_releases_list)}")
+            print(f"  {CLR_BOLD}Patched Releases           :{CLR_RESET} {c_rel}{', '.join(patched_releases_list)}{CLR_RESET}")
         if open_releases_list:
-            print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {', '.join(open_releases_list)}")
+            print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {c_aff}{', '.join(open_releases_list)}{CLR_RESET}")
         if not_affected_releases_list:
-            print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {', '.join(not_affected_releases_list)}")
+            print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
 
     if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
-        lc_color = "[1;31m" if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else "")
+        lc_color = c_aff_b if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else c_rel)
         print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{target_lifecycle['label']}{CLR_RESET}")
 
-    print(f"  {CLR_BOLD}Release Status ({rel_arg})     :{CLR_RESET} {triage_status}")
+    print(f"  {CLR_BOLD}Release Status ({rel_arg})     :{CLR_RESET} {st_color}{triage_status}{CLR_RESET}")
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
-        print(f"  [1;31m[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.[0m")
+        print(f"  {c_aff_b}[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.{CLR_RESET}")
     elif not has_released and (has_unpatched or has_in_progress or has_qa) and not with_mitigation:
         print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
