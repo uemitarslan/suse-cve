@@ -549,6 +549,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
     is_xen_pkg = any(p == "xen" or p.startswith("xen-") for p in affected_pkgs)
     is_qemu_pkg = any(p == "qemu" or p.startswith("qemu-") for p in affected_pkgs)
+    is_java_pkg = any(p == "java" or p.startswith("java-") or "openjdk" in p or "graalvm" in p for p in affected_pkgs) or bool(re.search(r"\b(java se|openjdk|graalvm|hotspot)\b", combined_intel))
     is_go_pkg = any(p.startswith("go1.") or p.startswith("golang-") or p in ("go", "go-doc", "go-race") for p in affected_pkgs)
     is_php_pkg = any(p == "php" or p.startswith("php7") or p.startswith("php8") for p in affected_pkgs) or bool(re.search(r"\bphp\b", combined_intel))
     is_grub_pkg = any(p == "grub2" or p.startswith("grub2-") for p in affected_pkgs) or bool(re.search(r"\bgrub2?\b", combined_intel))
@@ -581,6 +582,33 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
                 "title": "Restrict untrusted guest/management access to QEMU instances and plan VM live-migration/restart upon patching",
                 "cmd": "virsh list --all 2>/dev/null || pgrep -a qemu-system  # Audit running guests; restart QEMU processes after update"
             })
+
+    # Dynamic extraction of explicit vendor flags / sysctls from SUSE/RH/Ubuntu/NVD text
+    raw_vendor_blob = " ".join([
+        description or "",
+        rh_info.get("mitigation", ""),
+        rh_info.get("statement", ""),
+        ub_notes or "",
+        json.dumps(suse_intel or {})
+    ])
+    jvm_flags = sorted(set(re.findall(r"-XX:[+-][A-Za-z0-9_]+", raw_vendor_blob)))
+    if jvm_flags:
+        flag_str = " ".join(jvm_flags)
+        suggestions.append({
+            "title": f"Apply vendor-recommended JVM mitigation flag(s) ({flag_str}) via JDK_JAVA_OPTIONS (covers OpenJDK & SUSE Manager services)",
+            "cmd": f"grep -qF '{flag_str}' /etc/environment 2>/dev/null || echo 'JDK_JAVA_OPTIONS=\"{flag_str}\"' >> /etc/environment  # Also set in /etc/sysconfig/tomcat or systemd drop-in for SUMA & restart Java services"
+        })
+
+    if is_java_pkg:
+        if any(k in combined_intel for k in ("compiler", "intrinsic", "base64", "graalvm", "c2", "jit")) and "-XX:-UseBASE64Intrinsics" not in jvm_flags:
+            suggestions.append({
+                "title": "Disable vulnerable JVM Base64/JIT compiler intrinsics via JDK_JAVA_OPTIONS (covers OpenJDK 11/17/21+ & SUSE Manager Tomcat/Taskomatic)",
+                "cmd": "grep -q 'UseBASE64Intrinsics' /etc/environment 2>/dev/null || echo 'JDK_JAVA_OPTIONS=\"-XX:-UseBASE64Intrinsics\"' >> /etc/environment  # Add to /etc/sysconfig/tomcat or systemd Environment= for SUMA & restart Java services"
+            })
+        suggestions.append({
+            "title": "Audit running Java / OpenJDK processes (including SUSE Manager / Tomcat / Taskomatic) to verify active JVM flags and restart services",
+            "cmd": "ps -ef | grep -E '[j]ava'  # Verify mitigation JVM options are active in command line after service restart"
+        })
 
     if is_php_pkg:
         suggestions.append({
@@ -1043,7 +1071,11 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             target_sles_tag = f"SLES {major} SP{sp}"
     target_lifecycle = evaluate_release_lifecycle(target_sles_tag, lifecycle_map) if target_sles_tag else None
 
-    has_released = bool(raw_status_map.get("RELEASED"))
+    target_has_patches = any(
+        (major == "ALL" or sp_regex.search(p_k))
+        for p_k in patch_map.keys()
+    )
+    has_released = bool(raw_status_map.get("RELEASED")) or target_has_patches
     has_qa = bool(raw_status_map.get("IN QA"))
     has_in_progress = bool(raw_status_map.get("IN PROGRESS"))
     has_unpatched = bool(raw_status_map.get("AFFECTED")) or bool(raw_status_map.get("WONT FIX"))
