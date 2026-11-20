@@ -1832,7 +1832,7 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
             print(f"  {idx}. {CLR_BOLD}{rem['title']}{CLR_RESET}")
             print(f"     {CLR_CYAN}$ {rem['cmd']}{CLR_RESET}")
     elif view_mode == "remediate" and not mit.get("remediation"):
-        print(f"\n  {CLR_YELLOW}No official SUSE vendor patch released yet.{CLR_RESET} Run with {CLR_BOLD}--mitigate{CLR_RESET} to view compensating workarounds.")
+        print(f"\n  {CLR_BOLD}No official SUSE vendor patch released yet.{CLR_RESET} Run with {CLR_BOLD}--mitigate{CLR_RESET} to view compensating workarounds.")
 
     if mit.get("suggestions") and view_mode != "remediate":
         if mit.get("remediation"):
