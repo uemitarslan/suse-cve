@@ -547,19 +547,39 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         })
 
     is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
+    is_xen_pkg = any(p == "xen" or p.startswith("xen-") for p in affected_pkgs)
+    is_qemu_pkg = any(p == "qemu" or p.startswith("qemu-") for p in affected_pkgs)
     is_php_pkg = any("php" in p for p in affected_pkgs) or "php" in combined_intel
     is_grub_pkg = any("grub2" in p for p in affected_pkgs) or "grub" in combined_intel
+    is_cpu_sidechannel = any(k in combined_intel for k in ("transient execution", "l1d cache", "side-channel", "side channel", "speculative"))
 
     if not affected_pkgs:
         suggestions = [{
             "title": "No SLES packages affected -- no local workaround required",
             "cmd": "true  # System is not affected according to SUSE OVAL & Security Advisory metadata"
         }]
-    elif is_grub_pkg:
-        suggestions.append({
-            "title": "Restrict write access to GRUB2 configuration and verify Secure Boot state",
-            "cmd": "chmod 600 /boot/grub2/grub.cfg && mokutil --sb-state  # Ensure only root can modify boot config & disable untrusted serial console input"
-        })
+    else:
+        if is_grub_pkg:
+            suggestions.append({
+                "title": "Restrict write access to GRUB2 configuration and verify Secure Boot state",
+                "cmd": "chmod 600 /boot/grub2/grub.cfg && mokutil --sb-state  # Ensure only root can modify boot config & disable untrusted serial console input"
+            })
+        if is_cpu_sidechannel or is_xen_pkg:
+            if is_cpu_sidechannel:
+                suggestions.append({
+                    "title": "Disable SMT/Hyper-Threading to mitigate cross-thread L1D/cache transient execution leaks across VMs",
+                    "cmd": "cat /sys/devices/system/cpu/smt/control; echo off > /sys/devices/system/cpu/smt/control  # For Xen Dom0 boot: set smt=0 in /etc/default/grub"
+                })
+            if is_xen_pkg:
+                suggestions.append({
+                    "title": "Inspect Xen hypervisor CPU mitigation status and isolate untrusted guest VMs (host reboot required once patched)",
+                    "cmd": "xl dmesg | grep -iE 'spec|smt|vuln|l1d' && xl list  # Schedule Dom0 reboot after Xen patch installation"
+                })
+        elif is_qemu_pkg:
+            suggestions.append({
+                "title": "Restrict untrusted guest/management access to QEMU instances and plan VM live-migration/restart upon patching",
+                "cmd": "virsh list --all 2>/dev/null || pgrep -a qemu-system  # Audit running guests; restart QEMU processes after update"
+            })
 
     if is_php_pkg:
         suggestions.append({
@@ -574,7 +594,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     if not suggestions:
         if is_kernel_pkg and attack_vector == "NETWORK":
             suggestions.append({
-                "title": "No generic sysctl/module workaround available -- apply kernel patch/livepatch and restrict exposed network ports",
+                "title": "No generic sysctl/module workaround available -- check kernel livepatch and restrict exposed network ports",
                 "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is available; otherwise restrict ports via firewall-cmd"
             })
         elif is_kernel_pkg or attack_vector == "LOCAL":
@@ -584,13 +604,13 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
             })
         elif attack_vector == "NETWORK":
             suggestions.append({
-                "title": "Restrict network exposure of the affected service and restart running processes after patching",
-                "cmd": "firewall-cmd --list-all && zypper ps -s  # Restrict external access and verify services needing restart"
+                "title": "Restrict network exposure of the affected service until vendor patch is released",
+                "cmd": "firewall-cmd --list-all  # Restrict external network access to affected service ports"
             })
         else:
             suggestions.append({
-                "title": "Apply vendor update and restart affected user-space processes",
-                "cmd": "zypper ps -s  # Identify running processes still using unpatched libraries"
+                "title": "No automated configuration workaround available -- restrict untrusted access and monitor SUSE advisory for patch release",
+                "cmd": f"zypper lp && zypper lu --cve={cve_id}  # Verify patch availability; restart affected services/host once released"
             })
 
     return {
@@ -970,7 +990,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                     open_pkgs.update(pkgs_v)
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, open_pkgs, suse_intel_meta)
         if not open_pkgs and bool(raw_status_map.get("RELEASED")):
-            mitigation_data["sles_workarounds"] = [{"title": "Official SUSE patches are already released for all target packages", "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"}]
+            mitigation_data["suggestions"] = [{"title": "Official SUSE patches are already released for all target packages", "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"}]
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
