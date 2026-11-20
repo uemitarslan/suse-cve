@@ -100,9 +100,10 @@ def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
         return "ALL", "", re.compile(r"(?:12|15|16)", re.IGNORECASE)
-    m_micro = re.match(r"^(?:sl-?micro|micro)?-?([56])\.(\d+)$", s)
+    m_micro = re.match(r"^(?:sl-?micro|micro)-?([56])\.?(\d+)$|^([56])\.(\d+)$", s)
     if m_micro:
-        maj, minor = m_micro.group(1), m_micro.group(2)
+        maj = m_micro.group(1) or m_micro.group(3)
+        minor = m_micro.group(2) or m_micro.group(4)
         return f"MICRO{maj}", minor, re.compile(rf"(?:Enterprise|Linux)\s+Micro\s+{maj}\.{minor}\b", re.IGNORECASE)
 
     m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
@@ -852,6 +853,16 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                         raw_status_map["RELEASED"][prod] -= filtered_pkgs
                         if not raw_status_map["RELEASED"][prod]:
                             del raw_status_map["RELEASED"][prod]
+                    if st in ("IN QA", "IN PROGRESS") and "AFFECTED" in raw_status_map and prod in raw_status_map["AFFECTED"]:
+                        promoted = {
+                            ap for ap in raw_status_map["AFFECTED"][prod]
+                            if ap in filtered_pkgs or any(ap.startswith(f"{wp}-") for wp in filtered_pkgs)
+                        }
+                        if promoted:
+                            raw_status_map["AFFECTED"][prod] -= promoted
+                            raw_status_map[st][prod].update(promoted)
+                            if not raw_status_map["AFFECTED"][prod]:
+                                del raw_status_map["AFFECTED"][prod]
 
         if web_all_prods and "AFFECTED" in raw_status_map:
             matching_web = [p for p in web_all_prods if sp_regex.search(p)]
@@ -952,7 +963,9 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
 
     target_sles_tag = None
     if major != "ALL":
-        if major == "16":
+        if major.startswith("MICRO") and sp:
+            target_sles_tag = f"SL Micro {major.replace('MICRO', '')}.{sp}"
+        elif major == "16":
             target_sles_tag = f"SLES 16.{sp if sp else '0'}"
         elif sp:
             target_sles_tag = f"SLES {major} SP{sp}"
