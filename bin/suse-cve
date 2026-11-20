@@ -1581,6 +1581,8 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             f"{safe_cve}_systemd_daemon_reload:",
             "  cmd.run:",
             "    - name: systemctl daemon-reload",
+            "    - onchanges:",
+            f"      - file: {safe_cve}_step_1_systemd_java_dropin",
             ""
         ])
     if has_java_restart:
@@ -1588,6 +1590,8 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             f"{safe_cve}_restart_java_services:",
             "  cmd.run:",
             "    - name: spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
+            "    - onchanges:",
+            f"      - file: {safe_cve}_step_2_tomcat_dropin",
             ""
         ])
 
