@@ -1091,14 +1091,14 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, target_vuln_pkgs, suse_intel_meta)
         target_has_released = any(
             (major == "ALL" or sp_regex.search(p_k))
-            for p_k in raw_status_map.get("RELEASED", {}).keys()
+            for p_k in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys())
         )
         if target_has_released:
             matched_patch_ids = []
             for p_k, p_list in patch_map.items():
                 if major == "ALL" or sp_regex.search(p_k):
                     for p_item in p_list:
-                        pid = p_item.split(" (")[0].strip()
+                        pid = (p_item.get("patch", "") if isinstance(p_item, dict) else str(p_item).split(" (")[0]).strip()
                         if pid and pid not in matched_patch_ids:
                             matched_patch_ids.append(pid)
             needs_reboot = any(
@@ -1251,7 +1251,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     rel_open_tags = set()
     rel_not_aff_tags = set()
 
-    for p_k in raw_status_map.get("RELEASED", {}).keys():
+    for p_k in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys()):
         tg = _extract_rel_tag(p_k)
         if tg:
             rel_released_tags.add(tg)
