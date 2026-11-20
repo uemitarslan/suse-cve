@@ -992,12 +992,15 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                     if st_k != "RELEASED":
                         open_pkgs.update(pkgs_v)
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, target_vuln_pkgs, suse_intel_meta)
-        if not open_pkgs and bool(raw_status_map.get("RELEASED")):
-            mitigation_data["patch_released"] = True
-            mitigation_data["suggestions"].insert(0, {
-                "title": "Official SUSE patches are already released — apply when maintenance window permits (use workarounds below if deferred)",
-                "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"
-            })
+        target_has_released = any(
+            (major == "ALL" or sp_regex.search(p_k))
+            for p_k in raw_status_map.get("RELEASED", {}).keys()
+        )
+        if not open_pkgs and target_has_released:
+            mitigation_data["remediation"] = [{
+                "title": f"Apply released SUSE security patch for {cve}",
+                "cmd": f"zypper refresh && zypper patch --cve={cve}"
+            }]
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
@@ -1338,10 +1341,22 @@ def print_mitigation_block(mit: dict):
     if mit.get("vendor_refs"):
         print(f"  {CLR_BOLD}Vendor Advisories & KBs:{CLR_RESET} {', '.join(mit['vendor_refs'])}")
 
-    print(f"\n  {CLR_BOLD}Recommended SLES Workarounds (before patch release):{CLR_RESET}")
-    for idx, s in enumerate(mit["suggestions"], 1):
-        print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
-        print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
+    if mit.get("remediation"):
+        print(f"\n  {CLR_BOLD}Recommended SLES Remediation (Patch Available):{CLR_RESET}")
+        for idx, rem in enumerate(mit["remediation"], 1):
+            print(f"  {idx}. {CLR_BOLD}{rem['title']}{CLR_RESET}")
+            print(f"     {CLR_CYAN}$ {rem['cmd']}{CLR_RESET}")
+
+    if mit.get("suggestions"):
+        w_hdr = (
+            "Compensating Workarounds (Only if patch installation must be deferred):"
+            if mit.get("remediation")
+            else "Recommended SLES Workarounds (No patch released yet):"
+        )
+        print(f"\n  {CLR_BOLD}{w_hdr}{CLR_RESET}")
+        for idx, s in enumerate(mit["suggestions"], 1):
+            print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
+            print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
 
     print(f"\n  {CLR_DIM}Sources: {', '.join(mit.get('sources', []))}{CLR_RESET}\n")
 
