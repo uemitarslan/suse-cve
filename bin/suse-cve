@@ -1076,20 +1076,29 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         (major == "ALL" or sp_regex.search(p_k))
         for p_k in patch_map.keys()
     )
-    has_released = bool(raw_status_map.get("RELEASED")) or target_has_patches
-    has_qa = bool(raw_status_map.get("IN QA"))
-    has_in_progress = bool(raw_status_map.get("IN PROGRESS"))
-    has_unpatched = bool(raw_status_map.get("AFFECTED")) or bool(raw_status_map.get("WONT FIX"))
-    if major == "ALL":
-        for p_web, st_web in web_map.items():
-            if not p_web.startswith("_") and st_web not in ("RELEASED", "NOT AFFECTED"):
-                has_unpatched = True
-                break
-    elif target_sles_tag:
-        for p_web, st_web in web_map.items():
-            if not p_web.startswith("_") and sp_regex.search(p_web) and st_web not in ("RELEASED", "NOT AFFECTED"):
-                has_unpatched = True
-                break
+    target_has_rel_map = any(
+        (major == "ALL" or sp_regex.search(p_k))
+        for p_k in raw_status_map.get("RELEASED", {}).keys()
+    )
+    has_released = target_has_rel_map or target_has_patches
+    has_qa = any((major == "ALL" or sp_regex.search(p_k)) for p_k in raw_status_map.get("IN QA", {}).keys())
+    has_in_progress = any((major == "ALL" or sp_regex.search(p_k)) for p_k in raw_status_map.get("IN PROGRESS", {}).keys())
+    has_unpatched = any(
+        (major == "ALL" or sp_regex.search(p_k))
+        for st_u in ("AFFECTED", "WONT FIX")
+        for p_k in raw_status_map.get(st_u, {}).keys()
+    )
+    for st_web, prod_dict in web_map.items():
+        if st_web.startswith("_") or st_web in ("RELEASED", "NOT AFFECTED") or not isinstance(prod_dict, dict):
+            continue
+        for p_web in prod_dict.keys():
+            if major == "ALL" or sp_regex.search(p_web):
+                if st_web == "IN QA":
+                    has_qa = True
+                elif st_web == "IN PROGRESS":
+                    has_in_progress = True
+                else:
+                    has_unpatched = True
 
     if has_unpatched and mitigation_data and "remediation" in mitigation_data:
         del mitigation_data["remediation"]
