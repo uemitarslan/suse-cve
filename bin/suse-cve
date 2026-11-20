@@ -1093,7 +1093,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             (major == "ALL" or sp_regex.search(p_k))
             for p_k in raw_status_map.get("RELEASED", {}).keys()
         )
-        if (not open_pkgs or major == "ALL") and target_has_released:
+        if target_has_released:
             matched_patch_ids = []
             for p_k, p_list in patch_map.items():
                 if major == "ALL" or sp_regex.search(p_k):
@@ -1178,7 +1178,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 else:
                     has_unpatched = True
 
-    if has_unpatched and major != "ALL" and mitigation_data and "remediation" in mitigation_data:
+    if not target_has_patches and mitigation_data and "remediation" in mitigation_data:
         del mitigation_data["remediation"]
 
     if has_released and not has_qa and not has_in_progress and not has_unpatched:
@@ -1271,8 +1271,10 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         if r_tag not in rel_released_tags and r_tag not in rel_open_tags:
             rel_open_tags.add(r_tag)
 
+    partial_releases_set = rel_released_tags & rel_open_tags
     patched_releases_list = _compact_release_tags(rel_released_tags - rel_open_tags)
-    open_releases_list = _compact_release_tags(rel_open_tags)
+    partially_patched_releases_list = _compact_release_tags(partial_releases_set)
+    open_releases_list = _compact_release_tags(rel_open_tags - partial_releases_set)
     not_affected_releases_list = _compact_release_tags(rel_not_aff_tags - set(affected_releases) - rel_released_tags - rel_open_tags)
 
     meta_payload = {
@@ -1281,6 +1283,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         "stale_warning": is_stale,
         "affected_sles_releases": affected_releases,
         "patched_releases": patched_releases_list,
+        "partially_patched_releases": partially_patched_releases_list,
         "open_releases": open_releases_list,
         "not_affected_releases": not_affected_releases_list,
         "affected_sles_lifecycle": release_lifecycle_details,
@@ -1400,6 +1403,8 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     if major == "ALL":
         if patched_releases_list:
             print(f"  {CLR_BOLD}Patched Releases           :{CLR_RESET} {c_rel}{', '.join(patched_releases_list)}{CLR_RESET}")
+        if partially_patched_releases_list:
+            print(f"  {CLR_BOLD}Partially Patched Releases :{CLR_RESET} {c_qa}{', '.join(partially_patched_releases_list)}{CLR_RESET}")
         if open_releases_list:
             print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {c_aff}{', '.join(open_releases_list)}{CLR_RESET}")
         if not_affected_releases_list:
