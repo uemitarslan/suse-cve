@@ -1612,6 +1612,15 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             ""
         ])
 
+    if step_idx == 0:
+        noop_msg = sugs[0].get("title", f"No actionable SLES workaround required for {cve}").replace('"', "'") if sugs else f"No actionable SLES workaround required for {cve}"
+        lines.extend([
+            f"{safe_cve}_no_action_required:",
+            "  test.succeed_without_changes:",
+            f'    - name: "{noop_msg}"',
+            ""
+        ])
+
     return "\n".join(lines)
 
 
@@ -1684,6 +1693,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
 
     has_systemd_reload = False
     has_java_restart = False
+    task_idx = 0
 
     for s in sugs:
         cmd = s.get("cmd", "").strip()
@@ -1691,6 +1701,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
         if not cmd or cmd.startswith("#") or cmd.startswith("true"):
             lines.append(f"    # {title}")
             continue
+        task_idx += 1
 
         if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
             m = re.search(r'JDK_JAVA_OPTIONS=([^"\\\\]+)', cmd)
@@ -1768,6 +1779,16 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
                 f"        {cmd}",
                 ""
             ])
+
+    if task_idx == 0:
+        noop_msg = sugs[0].get("title", f"No actionable SLES workaround required for {cve}").replace('"', "'") if sugs else f"No actionable SLES workaround required for {cve}"
+        lines.extend([
+            f"    - name: {noop_msg}",
+            "      ansible.builtin.debug:",
+            f'        msg: "{noop_msg}"',
+            "      changed_when: false",
+            ""
+        ])
 
     if has_systemd_reload or has_java_restart:
         lines.append("  handlers:")
