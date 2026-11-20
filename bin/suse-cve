@@ -514,6 +514,18 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
     is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
     is_php_pkg = any("php" in p for p in affected_pkgs) or "php" in combined_intel
+    is_grub_pkg = any("grub2" in p for p in affected_pkgs) or "grub" in combined_intel
+
+    if not affected_pkgs:
+        suggestions = [{
+            "title": "No SLES packages affected -- no local workaround required",
+            "cmd": "true  # System is not affected according to SUSE OVAL & Security Advisory metadata"
+        }]
+    elif is_grub_pkg:
+        suggestions.append({
+            "title": "Restrict write access to GRUB2 configuration and verify Secure Boot state",
+            "cmd": "chmod 600 /boot/grub2/grub.cfg && mokutil --sb-state  # Ensure only root can modify boot config & disable untrusted serial console input"
+        })
 
     if is_php_pkg:
         suggestions.append({
@@ -691,13 +703,18 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         return f"SLES {maj}"
 
     # 1. Check local SQLite OVAL database across all majors (12, 15, 16)
+    not_aff_prods_pre = set(web_map.get("NOT AFFECTED", {}).keys())
+    not_aff_tags_pre = {extract_sles_tag(p) for p in not_aff_prods_pre if extract_sles_tag(p)}
+
     if os.path.exists(DB_PATH):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT platform FROM cve_catalog WHERE cve=?", (cve,))
         for (plat,) in cur.fetchall():
+            if plat in not_aff_prods_pre:
+                continue
             tag = extract_sles_tag(plat)
-            if tag:
+            if tag and tag not in not_aff_tags_pre:
                 releases.add(tag)
         conn.close()
 
@@ -798,7 +815,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 filtered_pkgs = filter_packages_for_platform(prod, pkgs)
                 if filtered_pkgs:
                     raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(filtered_pkgs)
-                    if st in ("AFFECTED", "IN QA") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
+                    if st in ("AFFECTED", "IN QA", "NOT AFFECTED") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
                         raw_status_map["RELEASED"][prod] -= filtered_pkgs
                         if not raw_status_map["RELEASED"][prod]:
                             del raw_status_map["RELEASED"][prod]
