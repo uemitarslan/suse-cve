@@ -626,12 +626,12 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     bz_workarounds = fetch_suse_bugzilla_workarounds(bugzilla_urls)
     if rh_mit:
         suggestions.insert(0, {
-            "title": f"Vendor Upstream Mitigation (Red Hat Security Advisory): {rh_mit[:260]}{'...' if len(rh_mit) > 260 else ''}",
+            "title": f"Vendor Upstream Mitigation (Red Hat Security Advisory): {rh_mit}",
             "cmd": "# Review and apply the upstream workaround above to your affected SLES service/subsystem until SUSE patch release"
         })
     for bz_id, bz_txt in bz_workarounds:
         suggestions.insert(0, {
-            "title": f"SUSE Bugzilla #{bz_id} Workaround Note: {bz_txt[:260]}{'...' if len(bz_txt) > 260 else ''}",
+            "title": f"SUSE Bugzilla #{bz_id} Workaround Note: {bz_txt}",
             "cmd": f"# Source: https://bugzilla.suse.com/show_bug.cgi?id={bz_id}"
         })
 
@@ -648,40 +648,26 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
     # Generic extraction of explicit JVM flags (-XX:...), sysctl settings, and modprobe blacklists
     jvm_flags = sorted(set(re.findall(r"-XX:[+-][A-Za-z0-9_]+", raw_vendor_blob)))
+    if is_java_pkg and any(k in combined_intel for k in ("compiler", "intrinsic", "base64", "graalvm", "c2", "jit")):
+        if "-XX:-UseBASE64Intrinsics" not in jvm_flags:
+            jvm_flags.append("-XX:-UseBASE64Intrinsics")
+
     if jvm_flags:
-        flag_str = " ".join(jvm_flags)
+        flag_str = " ".join(sorted(set(jvm_flags)))
         suggestions.append({
-            "title": f"Apply vendor-extracted JVM mitigation flag(s) ({flag_str}) via JDK_JAVA_OPTIONS (OpenJDK & SUSE Manager)",
-            "cmd": f"grep -qF '{flag_str}' /etc/environment 2>/dev/null || echo 'JDK_JAVA_OPTIONS=\"{flag_str}\"' >> /etc/environment  # Also set in /etc/sysconfig/tomcat or systemd drop-in for SUMA & restart Java services"
+            "title": f"Apply JVM mitigation ({flag_str}) across systemd Java services (SUMA Taskomatic, rhn-search, Tomcat) & shells",
+            "cmd": f"mkdir -p /etc/systemd/system.conf.d && printf '[Manager]\\nDefaultEnvironment=\"JDK_JAVA_OPTIONS={flag_str}\"\\n' > /etc/systemd/system.conf.d/99-cve-java.conf && echo 'export JDK_JAVA_OPTIONS=\"{flag_str}\"' > /etc/profile.d/cve-java.sh && systemctl daemon-reload"
         })
-
-    sysctl_matches = sorted(set(re.findall(r'\b((?:kernel|vm|net|fs|user)\.[a-z0-9_.]+)\s*=\s*([0-9a-zA-Z_-]+)', raw_vendor_blob)))
-    for sc_key, sc_val in sysctl_matches[:4]:
-        if not any(sc_key in s["cmd"] for s in suggestions):
-            suggestions.append({
-                "title": f"Apply vendor-extracted sysctl mitigation ({sc_key}={sc_val})",
-                "cmd": f"sysctl -w {sc_key}={sc_val} && echo '{sc_key} = {sc_val}' >> /etc/sysctl.d/99-cve-mitigation.conf"
-            })
-
-    mod_matches = sorted(set(re.findall(r'\b(?:blacklist|modprobe\s+-r)\s+([a-zA-Z0-9_-]{2,32})\b', raw_vendor_blob)))
-    for mod_name in mod_matches[:3]:
-        if mod_name not in ("the", "and", "for", "module", "kernel") and not any(mod_name in s["cmd"] for s in suggestions):
-            suggestions.append({
-                "title": f"Apply vendor-extracted kernel module blacklist ({mod_name})",
-                "cmd": f"echo 'install {mod_name} /bin/true' > /etc/modprobe.d/cve-{mod_name}.conf && modprobe -r {mod_name} 2>/dev/null || true"
-            })
+        suggestions.append({
+            "title": f"Configure Tomcat drop-in (/etc/tomcat/conf.d) with {flag_str} and restart Java / SUSE Manager services",
+            "cmd": f"[ -d /etc/tomcat/conf.d ] && echo 'JAVA_OPTS=\"${{JAVA_OPTS}} {flag_str}\"' > /etc/tomcat/conf.d/99-cve-mitigation.conf; spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search"
+        })
 
     if is_java_pkg:
-        if any(k in combined_intel for k in ("compiler", "intrinsic", "base64", "graalvm", "c2", "jit")) and "-XX:-UseBASE64Intrinsics" not in jvm_flags:
-            suggestions.append({
-                "title": "Disable vulnerable JVM Base64/JIT compiler intrinsics via JDK_JAVA_OPTIONS (covers OpenJDK 11/17/21+ & SUSE Manager Tomcat/Taskomatic)",
-                "cmd": "grep -q 'UseBASE64Intrinsics' /etc/environment 2>/dev/null || echo 'JDK_JAVA_OPTIONS=\"-XX:-UseBASE64Intrinsics\"' >> /etc/environment  # Add to /etc/sysconfig/tomcat or systemd Environment= for SUMA & restart Java services"
-            })
         suggestions.append({
-            "title": "Audit running Java / OpenJDK processes (including SUSE Manager / Tomcat / Taskomatic) to verify active JVM flags and restart services",
-            "cmd": "ps -ef | grep -E '[j]ava'  # Verify mitigation JVM options are active in command line after service restart"
+            "title": "Verify active JVM flags on all running Java processes (Tomcat, Taskomatic, rhn-search)",
+            "cmd": "ps -ef | grep -E '[j]ava'  # Confirm mitigation flags are present in active JVM args (or check via jcmd <PID> VM.flags)"
         })
-
     if is_php_pkg:
         suggestions.append({
             "title": "Disable stateful apache2-mod_php and isolate PHP via PHP-FPM with single-request worker recycling (blocks OOM/longjmp heap reuse)",
@@ -1108,9 +1094,25 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             for p_k in raw_status_map.get("RELEASED", {}).keys()
         )
         if not open_pkgs and target_has_released:
+            matched_patch_ids = []
+            for p_k, p_list in patch_map.items():
+                if major == "ALL" or sp_regex.search(p_k):
+                    for p_item in p_list:
+                        pid = p_item.split(" (")[0].strip()
+                        if pid and pid not in matched_patch_ids:
+                            matched_patch_ids.append(pid)
+            is_micro_target = major.startswith("MICRO") or (
+                major == "ALL" and any("Micro" in k for k in patch_map.keys()) and not any("Server" in k for k in patch_map.keys())
+            )
+            if is_micro_target:
+                rem_cmd = f"transactional-update patch && reboot  # Or: transactional-update pkg in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "transactional-update patch && reboot"
+                rem_title = f"Apply released SL Micro transactional patch for {cve} (reboot required)"
+            else:
+                rem_cmd = f"zypper refresh && zypper patch --cve={cve}" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
+                rem_title = f"Apply released SUSE security patch for {cve}"
             mitigation_data["remediation"] = [{
-                "title": f"Apply released SUSE security patch for {cve}",
-                "cmd": f"zypper refresh && zypper patch --cve={cve}"
+                "title": rem_title,
+                "cmd": rem_cmd
             }]
 
     lifecycle_map = load_sles_lifecycle()
