@@ -59,7 +59,7 @@ parsed = json.loads(out_json)
 check(rc == 0 and parsed["cve"] == "CVE-2026-97876" and "meta" in parsed, "--json produces valid structured JSON")
 
 rc, out_salt_na, _ = run_cli("12sp5", "CVE-2026-97876", "--mitigate", "--salt-config")
-check(rc == 0 and "test.succeed_without_changes" in out_salt_na, "--salt-config generates valid test.succeed_without_changes state for NOT AFFECTED")
+check(rc == 0 and "test.succeed_without_changes:\n    - name:" in out_salt_na, "--salt-config generates valid test.succeed_without_changes state for NOT AFFECTED")
 
 rc, out_ans_mit, _ = run_cli("15sp7", "CVE-2026-97876", "--mitigate", "--ansible-config")
 check(rc == 0 and "hosts:" in out_ans_mit and "tasks:" in out_ans_mit, "--ansible-config generates valid Ansible playbook structure")
@@ -78,3 +78,34 @@ p1.wait()
 check("BrokenPipeError" not in p1_err and "Traceback" not in p1_err, "Exits silently without Traceback on SIGPIPE (| head)")
 
 print("\nALL CORE TRIAGE TESTS PASSED SUCCESSFULLY.")
+
+print("\n=== 6. SL MICRO TRANSACTIONAL-UPDATE & REBOOT HANDLING ===")
+rc_m_salt, out_m_salt, _ = run_cli("micro6.1", "CVE-2026-98971", "--remediate", "--salt-config")
+check(rc_m_salt == 0 and "transactional-update" in out_m_salt, "SL Micro Salt state uses transactional-update instead of raw zypper")
+
+rc_m_ans, out_m_ans, _ = run_cli("micro6.1", "CVE-2026-98971", "--remediate", "--ansible-config")
+check(rc_m_ans == 0 and "transactional-update" in out_m_ans and "ansible.builtin.reboot" in out_m_ans, "SL Micro Ansible playbook uses transactional-update and reboot task")
+
+print("\n=== 7. LIFECYCLE BOUNDARIES: EOL & LTSS DETECTION ===")
+rc_eol, out_eol, _ = run_cli("micro6.0", "CVE-2026-97876")
+check(rc_eol == 0 and "End-of-Life" in out_eol, "Detects End-of-Life status on SL Micro 6.0")
+
+rc_ltss, out_ltss, _ = run_cli("15sp6", "CVE-2026-97876")
+check(rc_ltss == 0 and "LTSS" in out_ltss, "Detects LTSS lifecycle requirement on SLES 15 SP6")
+
+print("\n=== 8. AIR-GAPPED / NETWORK OUTAGE RESILIENCE ===")
+offline_env = os.environ.copy()
+offline_env["http_proxy"] = "http://127.0.0.1:9"
+offline_env["https_proxy"] = "http://127.0.0.1:9"
+offline_proc = subprocess.run(
+    [sys.executable, BIN, "15sp7", "CVE-2026-97876"],
+    env=offline_env,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    universal_newlines=True,
+    timeout=30,
+)
+check(offline_proc.returncode == 0 and "Traceback" not in offline_proc.stderr, "Gracefully degrades to local OVAL cache during total network outage")
+check("EXECUTIVE TRIAGE SUMMARY" in offline_proc.stdout, "Still produces full triage summary when external APIs are unreachable")
+
+print("\nALL EXTENDED STRESS & RESILIENCE TESTS PASSED.")
