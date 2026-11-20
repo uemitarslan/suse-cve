@@ -909,9 +909,12 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
         sys.exit(1)
 
-    cve = cve_arg.upper().strip()
+    cve = cve_arg.strip().rstrip(".,;:").upper()
     if not cve.startswith("CVE-"):
         cve = f"CVE-{cve}"
+    if not re.match(r"^CVE-\d{4}-\d{4,}$", cve):
+        print(f"Error: Invalid CVE identifier '{cve_arg}'. Expected format: CVE-YYYY-NNNN+", file=sys.stderr)
+        sys.exit(1)
 
     major, sp, sp_regex = build_platform_regex(rel_arg)
     oval_ts_str, oval_dt = get_oval_timestamp("15" if major == "ALL" else major)
@@ -1823,13 +1826,13 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     if mit.get("vendor_refs"):
         print(f"  {CLR_BOLD}Vendor Advisories & KBs:{CLR_RESET} {', '.join(mit['vendor_refs'])}")
 
-    if mit.get("remediation"):
+    if mit.get("remediation") and view_mode != "mitigate":
         print(f"\n  {CLR_BOLD}Recommended SLES Remediation (Patch Available):{CLR_RESET}")
         for idx, rem in enumerate(mit["remediation"], 1):
             print(f"  {idx}. {CLR_BOLD}{rem['title']}{CLR_RESET}")
             print(f"     {CLR_CYAN}$ {rem['cmd']}{CLR_RESET}")
 
-    if mit.get("suggestions"):
+    if mit.get("suggestions") and view_mode != "remediate":
         if mit.get("remediation"):
             w_hdr = "Compensating Workarounds (Only if patch installation must be deferred):"
         elif mit.get("partial_patch"):
