@@ -1020,11 +1020,93 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     else:
         triage_status = "NOT AFFECTED / NO OPEN VULNERABILITY"
 
+    def _extract_rel_tag(text: str):
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", text, re.IGNORECASE)
+        if m_mic:
+            return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
+        low = text.lower()
+        if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
+            return None
+        m = re.search(r'(?:suse linux enterprise|sle[s]?)[^0-9]*\b(12|15|16)(?:[.\s-]*(?:sp|service pack)?\s*(\d+))?', low)
+        if not m:
+            return None
+        maj, minor = m.group(1), m.group(2)
+        if maj == "16":
+            return f"SLES 16.{minor if minor else '0'}"
+        if minor:
+            return f"SLES {maj} SP{minor}"
+        return f"SLES {maj}"
+
+    def _compact_release_tags(tags: set) -> list:
+        # Group consecutive SP/minor versions (e.g., SLES 15 SP1..SP5 -> SLES 15 SP1-SP5)
+        groups = {}
+        others = set()
+        for t in tags:
+            m = re.match(r'^(SLES (?:12|15) SP)(\d+)$', t)
+            if m:
+                groups.setdefault(m.group(1), []).append(int(m.group(2)))
+                continue
+            m2 = re.match(r'^(SL Micro [56]\.)(\d+)$', t)
+            if m2:
+                groups.setdefault(m2.group(1), []).append(int(m2.group(2)))
+                continue
+            others.add(t)
+        out = []
+        for prefix in sorted(groups.keys()):
+            nums = sorted(set(groups[prefix]))
+            start = prev = nums[0]
+            for n in nums[1:] + [None]:
+                if n is not None and n == prev + 1:
+                    prev = n
+                else:
+                    if prev - start >= 2:
+                        out.append(f"{prefix}{start}-{prefix.split()[-1]}{prev}" if "SP" in prefix else f"{prefix}{start}-{prev}")
+                    elif prev > start:
+                        out.append(f"{prefix}{start}")
+                        out.append(f"{prefix}{prev}")
+                    else:
+                        out.append(f"{prefix}{start}")
+                    if n is not None:
+                        start = prev = n
+        out.extend(sorted(others))
+        return sorted(out)
+
+    rel_released_tags = set()
+    rel_open_tags = set()
+    rel_not_aff_tags = set()
+
+    for p_k in raw_status_map.get("RELEASED", {}).keys():
+        tg = _extract_rel_tag(p_k)
+        if tg:
+            rel_released_tags.add(tg)
+
+    for st_k in ("IN QA", "IN PROGRESS", "AFFECTED"):
+        for p_k in raw_status_map.get(st_k, {}).keys():
+            tg = _extract_rel_tag(p_k)
+            if tg:
+                rel_open_tags.add(tg)
+
+    for p_k in raw_status_map.get("NOT AFFECTED", {}).keys():
+        tg = _extract_rel_tag(p_k)
+        if tg:
+            rel_not_aff_tags.add(tg)
+
+    for r_tag in affected_releases:
+        if r_tag not in rel_released_tags and r_tag not in rel_open_tags:
+            rel_open_tags.add(r_tag)
+
+    patched_releases_list = _compact_release_tags(rel_released_tags - rel_open_tags)
+    open_releases_list = _compact_release_tags(rel_open_tags)
+    not_affected_releases_list = _compact_release_tags(rel_not_aff_tags - set(affected_releases) - rel_released_tags - rel_open_tags)
+
     meta_payload = {
         "oval_timestamp": oval_ts_str,
         "web_last_modified": web_ts_str,
         "stale_warning": is_stale,
         "affected_sles_releases": affected_releases,
+        "patched_releases": patched_releases_list,
+        "open_releases": open_releases_list,
+        "not_affected_releases": not_affected_releases_list,
         "affected_sles_lifecycle": release_lifecycle_details,
         "target_lifecycle": target_lifecycle,
         "triage_status": triage_status
@@ -1123,6 +1205,14 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             print(f"  {CLR_BOLD}Affected (End-of-Life)     :{CLR_RESET} {', '.join(eol_releases)}")
     else:
         print(f"  {CLR_BOLD}Affected SLES Versions     :{CLR_RESET} None detected across SLES 12/15/16")
+
+    if major == "ALL":
+        if patched_releases_list:
+            print(f"  {CLR_BOLD}Patched Releases           :{CLR_RESET} {', '.join(patched_releases_list)}")
+        if open_releases_list:
+            print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {', '.join(open_releases_list)}")
+        if not_affected_releases_list:
+            print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {', '.join(not_affected_releases_list)}")
 
     if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
         lc_color = "[1;31m" if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else "")
