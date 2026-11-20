@@ -549,8 +549,9 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
     is_xen_pkg = any(p == "xen" or p.startswith("xen-") for p in affected_pkgs)
     is_qemu_pkg = any(p == "qemu" or p.startswith("qemu-") for p in affected_pkgs)
-    is_php_pkg = any("php" in p for p in affected_pkgs) or "php" in combined_intel
-    is_grub_pkg = any("grub2" in p for p in affected_pkgs) or "grub" in combined_intel
+    is_go_pkg = any(p.startswith("go1.") or p.startswith("golang-") or p in ("go", "go-doc", "go-race") for p in affected_pkgs)
+    is_php_pkg = any(p == "php" or p.startswith("php7") or p.startswith("php8") for p in affected_pkgs) or bool(re.search(r"\bphp\b", combined_intel))
+    is_grub_pkg = any(p == "grub2" or p.startswith("grub2-") for p in affected_pkgs) or bool(re.search(r"\bgrub2?\b", combined_intel))
     is_cpu_sidechannel = any(k in combined_intel for k in ("transient execution", "l1d cache", "side-channel", "side channel", "speculative"))
 
     if not affected_pkgs:
@@ -592,7 +593,12 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         })
 
     if not suggestions:
-        if is_kernel_pkg and attack_vector == "NETWORK":
+        if is_kernel_pkg and any(k in combined_intel for k in ("perf", "pmu")):
+            suggestions.append({
+                "title": "Restrict unprivileged perf_event access and harden local kernel interfaces until patch/livepatch is applied",
+                "cmd": "sysctl -w kernel.perf_event_paranoid=3 user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
+            })
+        elif is_kernel_pkg and attack_vector == "NETWORK":
             suggestions.append({
                 "title": "No generic sysctl/module workaround available -- check kernel livepatch and restrict exposed network ports",
                 "cmd": "zypper lp  # Check if a cumulative kernel livepatch (klp) is available; otherwise restrict ports via firewall-cmd"
@@ -601,6 +607,11 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
             suggestions.append({
                 "title": "Harden local access and kernel interfaces until patch/livepatch is applied",
                 "cmd": "sysctl -w user.max_user_namespaces=0 kernel.unprivileged_bpf_disabled=1 kernel.kptr_restrict=2"
+            })
+        elif is_go_pkg:
+            suggestions.append({
+                "title": "Audit affected Go services/binaries (statically linked Go dependencies require updated package rebuilds and daemon restarts)",
+                "cmd": f"zypper lp && zypper lu --cve={cve_id}  # Update affected Go-based packages and restart running services"
             })
         elif attack_vector == "NETWORK":
             suggestions.append({
@@ -1035,12 +1046,25 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     has_released = bool(raw_status_map.get("RELEASED"))
     has_qa = bool(raw_status_map.get("IN QA"))
     has_in_progress = bool(raw_status_map.get("IN PROGRESS"))
-    has_unpatched = bool(raw_status_map.get("AFFECTED"))
+    has_unpatched = bool(raw_status_map.get("AFFECTED")) or bool(raw_status_map.get("WONT FIX"))
+    if major == "ALL":
+        for p_web, st_web in web_map.items():
+            if not p_web.startswith("_") and st_web not in ("RELEASED", "NOT AFFECTED"):
+                has_unpatched = True
+                break
+    elif target_sles_tag:
+        for p_web, st_web in web_map.items():
+            if not p_web.startswith("_") and sp_regex.search(p_web) and st_web not in ("RELEASED", "NOT AFFECTED"):
+                has_unpatched = True
+                break
+
+    if has_unpatched and mitigation_data and "remediation" in mitigation_data:
+        del mitigation_data["remediation"]
 
     if has_released and not has_qa and not has_in_progress and not has_unpatched:
         triage_status = "PATCHED (Patches released)"
     elif has_released and (has_qa or has_in_progress or has_unpatched):
-        triage_status = "PARTIALLY PATCHED (Patches available for core packages; some sub-packages/modules pending)"
+        triage_status = "PARTIALLY PATCHED (Patches available for some releases/packages; others pending or unpatched)"
     elif has_qa:
         triage_status = "IN QA (Patches in testing — mitigation recommended until release)"
     elif has_in_progress:
