@@ -1,8 +1,8 @@
 # suse-cve
 
-> Fast, precision-oriented CLI triage scanner and IaC generator for SUSE Linux Enterprise Server (**SLES 12, 15, 16**) and **SL Micro (5.x, 6.x)** â€” combining local OU©L SQLite indexing, live SUSE Security Advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
+> Fast, precision-oriented CLI triage scanner and IaCgenerator for SUSE Linux Enterprise Server (**SLES 12, 15, 16**) and **SL Micro (5.x, 6.x)** -- combining local OUL SQLite indexing, live SUSE Security Advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
 
-`suse-cve` bridges the gap between static OVAL vulnerability feeds and authoritative SUSE Security Advisories. It gives administrators and security engineers an immediate executive triage summary â€” classifying affected releases by **General Support**, **LTSS**, or **End-of-Life (EOL)** â€” while generating ready-to-audit patch commands, compensating workarounds, structured JSON, and idempotent SaltStack/Ansible configurations.
+`suse-cve` bridges the gap between static OVAL vulnerability feeds and authoritative SUSE Security Advisories. It gives administrators and security engineers an immediate executive triage summary -- classifying affected releases by **General Support**, **LTSS**, or **End-of-Life (EOL)** -- while generating ready-to-audit patch commands, compensating workarounds, structured JSON, and idempotent SaltStack/Ansible configurations.
 
 ---
 
@@ -12,7 +12,7 @@
    - Categorizes affected and unaffected releases across **SLES 12, 15, 16** and **SL Micro 5.x / 6.x** into **General Support**, **LTSS Required** (with expiration dates), and **End-of-Life (EOL)**.
    - Isolates target-specific status (` NOT AFFECTED`, `RELEASED`, `IN QA`, `AFFECTED`) without leaking unrelated service packs or irrelevant upstream workarounds.
 2. **Hybrid OVAL + Real-Time Web Engine with Air-Gapped Resilience:**
-   - Queries a local SQLite index of SUSE IVAL feeds for sub-second lookups and overlays real-time advisory, QA, and patch metadata from `suse.com/security/cve/`.
+   - Queries a local SQLite index of SUSE OVAL feeds for sub-second lookups and overlays real-time advisory, QA, and patch metadata from `suse.com/security/cve/`.
    - Gracefully degrades to the local OVAL cache during network outages or in air-gapped environments without tracebacks.
 3. **Actionable Patch IDs & Transactional Update Support (`[PATCHES]`):**
    - Extracts `SUSE-SLE-*` / `SUSE-SLE-Micro-*` patch identifiers and target architectures (`x86_64`, `aarch64`, `ppc64le`, `s390x`).
@@ -29,9 +29,9 @@
 ## Installation
 
 ### Prerequisites
-- Python 3.6+ (`Python3-lxml` recommended for fast OU©L XML parsing)
+- Python 3.6+ (`python3-lxml` recommended for fast OUL XML parsing)
 - `curl`, `sqlite3`h, `jq` (optional, for JSON pipeline filtering)
-- SLeS 12, SLES 15, SLES 16, or SL Micro 5.x / 6.x
+- SLES 12, SLES 15, SLES 16, or SL Micro 5.x / 6.x
 
 ### Automated Install
 
@@ -54,9 +54,9 @@ suse-cve --sync
 
 | Parameter | Required | Description | Examples |
 |---|---|---|---|
-| `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, a15sp7`, a16.0`, `micro6.1`, `all` |
+| `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, 15sp7`, 16.0`, `micro6.1`, `all` |
 | `<CVE-ID>` | Yes | CVE identifier (case-insensitive, trailing punctuation stripped) | `CVE-2026-98432`, `2026-98432` |
-| `[status_filter]` | No | Restrict detail output to a specific patch status | `rel`, `qa`, `aff`, `inp`, `won{` |
+| `[status_filter]` | No | Restrict detail output to a specific patch status | `rel`, `qa`, `aff`, `inp`, `wont` |
 | `--remediate` | No | Focus output or IaC generation strictly on official vendor patch remediation | `--remediate` |
 | `--mitigate`, `-m` | No | Focus output or IaC generation strictly on compensating workarounds / hardening | `--mitigate` |
 | `--salt-config` | No | Output an idempotent SaltStack `.sls` state file | `--remediate --salt-config` |
@@ -124,7 +124,7 @@ python3 tests/test_suse_cve.py
 ## Exit Codes
 
 | Exit Code | Meaning |
-|---+---|
+|---|---|
 | `0` | Query succeeded (including `NOT AFFECTED` or `UNKNOWN` triage results). |
 | `1` | Invalid CVE identifier/arguments, no matching records for a strict status filter, or missing local database. |
 
@@ -132,4 +132,4 @@ python3 tests/test_suse_cve.py
 
 ## License
 
-This project is licensed under the MIT License â€” see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License -- see the [LICENSE](LICENSE) file for details.
