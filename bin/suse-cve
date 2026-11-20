@@ -249,7 +249,12 @@ def fetch_web_data(cve_id: str, platform_regex):
         if not prod or "product" in prod.lower():
             continue
 
-        if prod.startswith("Container ") or prod.startswith("Image ") or prod.lower().startswith("opensuse"):
+        if (
+            prod.startswith("Container ")
+            or prod.startswith("Image ")
+            or prod.lower().startswith("opensuse")
+            or ("/" in prod and "suse linux" not in prod.lower())
+        ):
             continue
 
         # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE advisories)
@@ -848,6 +853,34 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         if not raw_status_map["AFFECTED"]:
             del raw_status_map["AFFECTED"]
 
+    if web_ok and "NOT AFFECTED" in web_map:
+        web_active_prods = (
+            set(web_map.get("RELEASED", {}).keys())
+            | set(web_map.get("IN QA", {}).keys())
+            | set(web_map.get("AFFECTED", {}).keys())
+        )
+        na_base_versions = set()
+        for na_prod in web_map["NOT AFFECTED"].keys():
+            m_base = re.match(r'^SUSE Linux Enterprise Server (\d+(?: SP\d+)?)$', na_prod)
+            if m_base:
+                na_base_versions.add(m_base.group(1))
+            if na_prod not in web_active_prods:
+                for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+                    if st_key in raw_status_map and na_prod in raw_status_map[st_key]:
+                        del raw_status_map[st_key][na_prod]
+                        if not raw_status_map[st_key]:
+                            del raw_status_map[st_key]
+
+        for ver_str in na_base_versions:
+            for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+                if st_key not in raw_status_map:
+                    continue
+                for p_name in list(raw_status_map[st_key].keys()):
+                    if p_name not in web_active_prods and p_name.endswith(f" {ver_str}") and "SUSE Linux Enterprise" in p_name:
+                        del raw_status_map[st_key][p_name]
+                if not raw_status_map[st_key]:
+                    del raw_status_map[st_key]
+
     if "NOT AFFECTED" in raw_status_map:
         for p in list(raw_status_map["NOT AFFECTED"].keys()):
             if p in rel_dict:
@@ -858,8 +891,8 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             del raw_status_map["NOT AFFECTED"]
 
     all_affected_pkgs = set()
-    for p_dict in raw_status_map.values():
-        for pkgs in p_dict.values():
+    for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+        for pkgs in raw_status_map.get(st_key, {}).values():
             all_affected_pkgs.update(pkgs)
 
     mitigation_data = None
@@ -1054,7 +1087,7 @@ def print_mitigation_block(mit: dict):
     cwe_str = f" | {', '.join(mit['cwes'])}" if mit["cwes"] else ""
     print(f"  {CLR_BOLD}CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
 
-    desc = mit["description"]
+    desc = re.sub(r'\s+', ' ', mit["description"]).strip()
     if len(desc) > 340:
         desc = desc[:337] + "..."
     print(f"  {CLR_BOLD}Summary:{CLR_RESET} {desc}")
