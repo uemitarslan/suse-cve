@@ -599,11 +599,11 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     is_cpu_sidechannel = any(k in combined_intel for k in ("transient execution", "l1d cache", "side-channel", "side channel", "speculative"))
 
     if not affected_pkgs:
-        suggestions = [{
+        return [{
             "title": "No SLES packages affected -- no local workaround required",
             "cmd": "true  # System is not affected according to SUSE OVAL & Security Advisory metadata"
         }]
-    else:
+    if True:
         if is_grub_pkg:
             suggestions.append({
                 "title": "Restrict write access to GRUB2 configuration and verify Secure Boot state",
