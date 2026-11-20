@@ -1065,6 +1065,8 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         triage_status = "PATCHED (Patches released)"
     elif has_released and (has_qa or has_in_progress or has_unpatched):
         triage_status = "PARTIALLY PATCHED (Patches available for some releases/packages; others pending or unpatched)"
+        if mitigation_data is not None:
+            mitigation_data["partial_patch"] = True
     elif has_qa:
         triage_status = "IN QA (Patches in testing — mitigation recommended until release)"
     elif has_in_progress:
@@ -1374,7 +1376,7 @@ def print_mitigation_block(mit: dict):
     if mit.get("suggestions"):
         if mit.get("remediation"):
             w_hdr = "Compensating Workarounds (Only if patch installation must be deferred):"
-        elif has_released:
+        elif mit.get("partial_patch"):
             w_hdr = "Recommended SLES Workarounds (For unpatched releases/packages — see [PATCHES] for patched releases):"
         else:
             w_hdr = "Recommended SLES Workarounds (No patch released yet):"
