@@ -232,18 +232,34 @@ def fetch_web_data(cve_id: str, platform_regex):
             bugzilla_urls.append(b)
 
     # 1. 'List of packages in QA'
+    def extract_prods_from_cell(cell_html: str) -> list:
+        parts = re.split(r'(?:<br\s*/?>|</li>|</p>|</div>|\n)+', cell_html, flags=re.IGNORECASE)
+        res = []
+        for p in parts:
+            txt = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', p)).strip()
+            if not txt or "product" in txt.lower():
+                continue
+            if (
+                txt.startswith("Container ")
+                or txt.startswith("Image ")
+                or txt.lower().startswith("opensuse")
+                or ("/" in txt and "suse linux" not in txt.lower())
+            ):
+                continue
+            res.append(txt)
+        return res
+
     m_qa = re.search(r'List of packages in QA.*?<table[^>]*>(.*?)</table>', html, re.DOTALL | re.IGNORECASE)
     if m_qa:
         for row in re.findall(r'<tr[^>]*>(.*?)</tr>', m_qa.group(1), re.DOTALL | re.IGNORECASE):
             tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
             if len(tds) >= 2:
-                prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
-                if prod and "product" not in prod.lower():
+                prods = extract_prods_from_cell(tds[0])
+                pkgs = extract_pkgs_from_cell(tds[1])
+                for prod in prods:
                     web_all_prods_for_major.add(prod)
-                    if platform_regex.search(prod):
-                        pkgs = extract_pkgs_from_cell(tds[1])
-                        if pkgs:
-                            web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
+                    if platform_regex.search(prod) and pkgs:
+                        web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
 
     # 2. Parse all table rows (Released Packages table & Status table)
     for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE):
@@ -251,32 +267,25 @@ def fetch_web_data(cve_id: str, platform_regex):
         if len(tds) < 2:
             continue
 
-        prod = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tds[0])).strip()
-        if not prod or "product" in prod.lower():
-            continue
-
-        if (
-            prod.startswith("Container ")
-            or prod.startswith("Image ")
-            or prod.lower().startswith("opensuse")
-            or ("/" in prod and "suse linux" not in prod.lower())
-        ):
+        prods = extract_prods_from_cell(tds[0])
+        if not prods:
             continue
 
         # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE advisories)
         if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'SUSE-(?:SLE|SU|RU|FU)-', tds[2])):
-            web_all_prods_for_major.add(prod)
-            if platform_regex.search(prod):
-                pkgs = extract_pkgs_from_cell(tds[1])
-                if pkgs:
-                    web_map.setdefault("RELEASED", {}).setdefault(prod, set()).update(pkgs)
-                patches = extract_patchnames_from_cell(tds[2])
-                if patches:
-                    existing = {item["patch"] for item in patch_map.get(prod, [])}
-                    for pt in patches:
-                        if pt["patch"] not in existing:
-                            patch_map.setdefault(prod, []).append(pt)
-                            existing.add(pt["patch"])
+            pkgs = extract_pkgs_from_cell(tds[1])
+            patches = extract_patchnames_from_cell(tds[2])
+            for prod in prods:
+                web_all_prods_for_major.add(prod)
+                if platform_regex.search(prod):
+                    if pkgs:
+                        web_map.setdefault("RELEASED", {}).setdefault(prod, set()).update(pkgs)
+                    if patches:
+                        existing = {item["patch"] for item in patch_map.get(prod, [])}
+                        for pt in patches:
+                            if pt["patch"] not in existing:
+                                patch_map.setdefault(prod, []).append(pt)
+                                existing.add(pt["patch"])
             continue
 
         # Case B: Standard status table (Product | Package | Status)
@@ -291,10 +300,10 @@ def fetch_web_data(cve_id: str, platform_regex):
                 pkg_cell = td
 
         if found_status:
-            web_all_prods_for_major.add(prod)
-            if pkg_cell and (platform_regex.search(prod) or found_status == "NOT AFFECTED"):
-                pkgs = extract_pkgs_from_cell(pkg_cell)
-                if pkgs:
+            pkgs = extract_pkgs_from_cell(pkg_cell) if pkg_cell else set()
+            for prod in prods:
+                web_all_prods_for_major.add(prod)
+                if pkgs and (platform_regex.search(prod) or found_status == "NOT AFFECTED"):
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
 
     suse_intel = {}
@@ -309,7 +318,7 @@ def fetch_web_data(cve_id: str, platform_regex):
         suse_intel["cvss3"] = f"{m_v3.group(1).strip()} ({m_v3.group(2).strip()})"
     m_v4 = re.search(r"CVSS v4 Scores.*?<td>Base Score</td>\s*<td>([^<]+)</td>\s*</tr>\s*<tr><td>Vector</td>\s*<td>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
     if m_v4:
-        suse_intel["cvss4"] = f"{m_v4.group(1).strip()} ({m_v4.group(2).strip()})"
+        v4_vec = re.sub(r"(?:/[A-Z]+:X)+$", "", m_v4.group(2).strip()); suse_intel["cvss4"] = f"{m_v4.group(1).strip()} ({v4_vec})"
     web_map["_SUSE_INTEL"] = suse_intel
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
@@ -922,6 +931,21 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 if not raw_status_map[st_key]:
                     del raw_status_map[st_key]
 
+    pipeline_order = ["RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"]
+    for idx, higher_st in enumerate(pipeline_order):
+        if higher_st not in raw_status_map:
+            continue
+        for lower_st in pipeline_order[idx + 1:]:
+            if lower_st not in raw_status_map:
+                continue
+            for prod_k, higher_pkgs in raw_status_map[higher_st].items():
+                if prod_k in raw_status_map[lower_st]:
+                    raw_status_map[lower_st][prod_k] -= higher_pkgs
+                    if not raw_status_map[lower_st][prod_k]:
+                        del raw_status_map[lower_st][prod_k]
+            if not raw_status_map[lower_st]:
+                del raw_status_map[lower_st]
+
     if "NOT AFFECTED" in raw_status_map:
         for p in list(raw_status_map["NOT AFFECTED"].keys()):
             if p in rel_dict:
@@ -939,7 +963,12 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     mitigation_data = None
     if with_mitigation:
         suse_intel_meta = web_map.pop("_SUSE_INTEL", {})
-        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs, suse_intel_meta)
+        open_pkgs = set()
+        for st_k in ("IN QA", "IN PROGRESS", "AFFECTED"):
+            for p_k, pkgs_v in raw_status_map.get(st_k, {}).items():
+                if major == "ALL" or sp_regex.search(p_k):
+                    open_pkgs.update(pkgs_v)
+        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, open_pkgs, suse_intel_meta)
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
@@ -1145,7 +1174,8 @@ def print_mitigation_block(mit: dict):
         if si.get("cvss4"): sparts.append(f"CVSS v4: {si['cvss4']}")
         if sparts:
             print(f"  {CLR_BOLD}SUSE Advisory:{CLR_RESET} {' | '.join(sparts)}")
-    print(f"  {CLR_BOLD}NVD CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
+    if not (str(mit["cvss"]).startswith("N/A") and (si.get("cvss3") or si.get("cvss4"))):
+        print(f"  {CLR_BOLD}NVD CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
 
     desc = re.sub(r'\s+', ' ', mit["description"]).strip()
     if len(desc) > 340:
