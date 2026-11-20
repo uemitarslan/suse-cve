@@ -301,6 +301,8 @@ def fetch_web_data(cve_id: str, platform_regex):
 
         if found_status:
             pkgs = extract_pkgs_from_cell(pkg_cell) if pkg_cell else set()
+            if not pkgs and found_status == "NOT AFFECTED":
+                pkgs = {"(not affected)"}
             for prod in prods:
                 web_all_prods_for_major.add(prod)
                 if pkgs and (platform_regex.search(prod) or found_status == "NOT AFFECTED"):
@@ -1370,6 +1372,12 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     for p, pkgs in sorted(raw_status_map[st].items())
                     if pkgs and (major == "ALL" or sp_regex.search(p))
                 }
+                if not filtered_st and st == "NOT AFFECTED":
+                    filtered_st = {
+                        p: sorted(list(pkgs))
+                        for p, pkgs in sorted(raw_status_map[st].items())
+                        if pkgs and ("suse linux enterprise" in p.lower() or "micro" in p.lower())
+                    }
                 if filtered_st:
                     output_dict[st] = filtered_st
 
@@ -1425,8 +1433,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             print(f"  {CLR_BOLD}Partially Patched Releases :{CLR_RESET} {c_qa}{', '.join(partially_patched_releases_list)}{CLR_RESET}")
         if open_releases_list:
             print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {c_aff}{', '.join(open_releases_list)}{CLR_RESET}")
-        if not_affected_releases_list:
-            print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
+    if not_affected_releases_list:
+        print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
 
     if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
         lc_color = c_aff_b if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else c_rel)
