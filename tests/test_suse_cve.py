@@ -173,4 +173,10 @@ piddata = json.loads(out_pid)
 act_val = next((r["action"] for r in piddata.get("rows", []) if r.get("cve") == "CVE-2026-98432"), "")
 check("SUSE-SLE-" in act_val and "SUSE Linux Enterprise" not in act_val, "Batch action column renders clean SUSE-SLE-* patch IDs instead of product names")
 
+rc_t1, out_t1, _ = run_cli("15sp7", "CVE-2026-98432", "--table")
+check(rc_t1 == 0 and "[EXECUTIVE BATCH TRIAGE SUMMARY]" in out_t1 and "PATCHES / ACTION" in out_t1 and "[MITIGATION & MULTI-SOURCE" not in out_t1, "--table renders compact 1-row triage table for a single CVE")
+
+rc_s1, out_s1, _ = run_cli("15sp7", "CVE-2026-98432")
+check(rc_s1 == 0 and "PATCHES / ACTION" in out_s1 and "[EXECUTIVE TRIAGE SUMMARY]" in out_s1, "Default single-CVE output includes compact 1-row triage header table above details")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")

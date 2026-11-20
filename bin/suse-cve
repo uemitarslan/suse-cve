@@ -1414,6 +1414,20 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         st_color = c_aff_b
 
     print(f"{CLR_DIM}[SYNC] OVAL: {oval_ts_str} | WEB: {web_ts_str}{CLR_RESET}\n")
+    r_single = format_triage_row({
+        "cve": cve,
+        "meta": meta_payload,
+        "patches": sorted_patches,
+        "mitigation": mitigation_data or {},
+    })
+    w_cve = max(len("CVE"), len(r_single["cve"]))
+    w_st = max(len("STATUS"), len(r_single["status"]))
+    w_sev = max(len("SEVERITY"), len(r_single["severity"]))
+    w_lc = max(len("LIFECYCLE"), len(r_single["lifecycle"]))
+    tbl_hdr = f"  {'CVE':<{w_cve}}  {'STATUS':<{w_st}}  {'SEVERITY':<{w_sev}}  {'LIFECYCLE':<{w_lc}}  PATCHES / ACTION"
+    print(f"{CLR_BOLD}{tbl_hdr}{CLR_RESET}")
+    print("  " + "-" * (len(tbl_hdr) - 2))
+    print(f"  {r_single['cve']:<{w_cve}}  {st_color}{r_single['status']:<{w_st}}{CLR_RESET}  {r_single['severity']:<{w_sev}}  {r_single['lifecycle']:<{w_lc}}  {r_single['action']}\n")
     print(f"{CLR_MAG}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
     if affected_releases:
         if active_supported_releases:
@@ -2013,6 +2027,76 @@ def extract_batch_cves(cve_tokens, file_path=None):
     return cves
 
 
+def format_triage_row(item):
+    """Build normalized summary table row dict from a single-CVE JSON payload."""
+    meta = item.get("meta", {})
+    mit = item.get("mitigation", {}) or {}
+    suse_intel = mit.get("suse_intel", {}) or {}
+    kev_raw = mit.get("cisa_kev")
+    kev_intel = kev_raw if isinstance(kev_raw, dict) else {"in_kev": bool(kev_raw and "YES" in str(kev_raw).upper())}
+
+    triage_full = meta.get("triage_status", "UNKNOWN")
+    triage_short = triage_full.split("(", 1)[0].strip() if "(" in triage_full else triage_full
+    triage_upper = triage_short.upper()
+
+    is_kev = bool(kev_intel.get("in_kev") or kev_intel.get("listed") or kev_intel.get("known_exploited"))
+
+    cvss_raw = mit.get("cvss")
+    cvss_dict = cvss_raw if isinstance(cvss_raw, dict) else {}
+    rating = suse_intel.get("rating") or cvss_dict.get("severity") or ""
+    cvss = suse_intel.get("cvss3") or cvss_dict.get("score") or (cvss_raw if isinstance(cvss_raw, str) else "")
+    cvss_short = "" if (not cvss or str(cvss).strip().upper() == "N/A") else str(cvss).split()[0]
+    if not rating and cvss_short:
+        try:
+            sc = float(cvss_short)
+            rating = "CRITICAL" if sc >= 9.0 else ("HIGH" if sc >= 7.0 else ("MEDIUM" if sc >= 4.0 else "LOW"))
+        except ValueError:
+            rating = "N/A"
+    rating = rating or "N/A"
+    sev_str = f"{rating} ({cvss_short})" if cvss_short else str(rating)
+    if is_kev:
+        sev_str += " [KEV!]"
+
+    lc = meta.get("target_lifecycle", {})
+    if isinstance(lc, dict):
+        lc_str = lc.get("state") or lc.get("label") or "ALL"
+    else:
+        lc_str = str(lc) if lc else "ALL"
+
+    raw_patches = item.get("patches") or {}
+    patch_entries = []
+    if isinstance(raw_patches, dict):
+        for plist in raw_patches.values():
+            if isinstance(plist, list):
+                patch_entries.extend(plist)
+            elif plist:
+                patch_entries.append(plist)
+    elif isinstance(raw_patches, list):
+        patch_entries.extend(raw_patches)
+    patch_ids = sorted(
+        {re.sub(r'\s*\([^)]*\)$', '', str(x.get("patch_id") or x.get("id") or x.get("patch") or "" if isinstance(x, dict) else x)).strip() for x in patch_entries if x},
+        key=lambda pid: (1 if "Live-Patching" in pid else 0, pid)
+    )
+    if patch_ids:
+        action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
+    elif "NOT AFFECTED" in triage_upper:
+        action_str = "None (Not Affected)"
+    else:
+        suse_state = suse_intel.get("state") or "Pending"
+        action_str = f"Patch {suse_state} (see --mitigate)"
+
+    return {
+        "cve": item.get("cve", ""),
+        "status": triage_short,
+        "status_detail": triage_full,
+        "severity": sev_str,
+        "lifecycle": lc_str,
+        "action": action_str,
+        "is_kev": is_kev,
+        "triage_upper": triage_upper,
+    }
+
+
 def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
     """Modular batch orchestrator that delegates each CVE to query(..., as_json=True) without altering single-CVE logic."""
     import io
@@ -2059,15 +2143,9 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
 
     rows = []
     for item in results:
-        meta = item.get("meta", {})
-        mit = item.get("mitigation", {}) or {}
-        suse_intel = mit.get("suse_intel", {}) or {}
-        kev_raw = mit.get("cisa_kev")
-        kev_intel = kev_raw if isinstance(kev_raw, dict) else {"in_kev": bool(kev_raw and "YES" in str(kev_raw).upper())}
-
-        triage_full = meta.get("triage_status", "UNKNOWN")
-        triage_short = triage_full.split("(", 1)[0].strip() if "(" in triage_full else triage_full
-        triage_upper = triage_short.upper()
+        row_info = format_triage_row(item)
+        triage_upper = row_info["triage_upper"]
+        is_kev = row_info["is_kev"]
 
         if "NOT AFFECTED" in triage_upper:
             summary["not_affected"] += 1
@@ -2078,53 +2156,8 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         else:
             summary["affected_or_pending"] += 1
 
-        is_kev = bool(kev_intel.get("in_kev") or kev_intel.get("listed") or kev_intel.get("known_exploited"))
         if is_kev:
             summary["cisa_kev"] += 1
-
-        cvss_raw = mit.get("cvss")
-        cvss_dict = cvss_raw if isinstance(cvss_raw, dict) else {}
-        rating = suse_intel.get("rating") or cvss_dict.get("severity") or ""
-        cvss = suse_intel.get("cvss3") or cvss_dict.get("score") or (cvss_raw if isinstance(cvss_raw, str) else "")
-        cvss_short = "" if (not cvss or str(cvss).strip().upper() == "N/A") else str(cvss).split()[0]
-        if not rating and cvss_short:
-            try:
-                sc = float(cvss_short)
-                rating = "CRITICAL" if sc >= 9.0 else ("HIGH" if sc >= 7.0 else ("MEDIUM" if sc >= 4.0 else "LOW"))
-            except ValueError:
-                rating = "N/A"
-        rating = rating or "N/A"
-        sev_str = f"{rating} ({cvss_short})" if cvss_short else str(rating)
-        if is_kev:
-            sev_str += " [KEV!]"
-
-        lc = meta.get("target_lifecycle", {})
-        if isinstance(lc, dict):
-            lc_str = lc.get("state") or lc.get("label") or "ALL"
-        else:
-            lc_str = str(lc) if lc else "ALL"
-
-        raw_patches = item.get("patches") or {}
-        patch_entries = []
-        if isinstance(raw_patches, dict):
-            for plist in raw_patches.values():
-                if isinstance(plist, list):
-                    patch_entries.extend(plist)
-                elif plist:
-                    patch_entries.append(plist)
-        elif isinstance(raw_patches, list):
-            patch_entries.extend(raw_patches)
-        patch_ids = sorted(
-            {re.sub(r'\s*\([^)]*\)$', '', str(x.get("patch_id") or x.get("id") or x.get("patch") or "" if isinstance(x, dict) else x)).strip() for x in patch_entries if x},
-            key=lambda pid: (1 if "Live-Patching" in pid else 0, pid)
-        )
-        if patch_ids:
-            action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
-        elif "NOT AFFECTED" in triage_upper:
-            action_str = "None (Not Affected)"
-        else:
-            suse_state = suse_intel.get("state") or "Pending"
-            action_str = f"Patch {suse_state} (see --mitigate)"
 
         is_open = not ("NOT AFFECTED" in triage_upper or triage_upper.startswith("PATCHED") or triage_upper.startswith("RELEASED"))
         if only_open and not is_open:
@@ -2134,12 +2167,12 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
 
         filtered_results.append(item)
         rows.append({
-            "cve": item.get("cve", ""),
-            "status": triage_short,
-            "status_detail": triage_full,
-            "severity": sev_str,
-            "lifecycle": lc_str,
-            "action": action_str,
+            "cve": row_info["cve"],
+            "status": row_info["status"],
+            "status_detail": row_info["status_detail"],
+            "severity": row_info["severity"],
+            "lifecycle": row_info["lifecycle"],
+            "action": row_info["action"],
         })
 
     summary["displayed"] = len(rows)
@@ -2204,6 +2237,9 @@ if __name__ == "__main__":
     if only_kev:
         raw_args.remove("--only-kev")
 
+    as_table = any(a in ("--table", "-t") for a in raw_args)
+    raw_args = [a for a in raw_args if a not in ("--table", "-t")]
+
     with_remediation = False
     for flag in ("--remediate", "--fix"):
         if flag in raw_args:
@@ -2259,7 +2295,7 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json]")
         print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
@@ -2302,7 +2338,7 @@ if __name__ == "__main__":
         for t in extra_tokens:
             if t.lower() in known_filters and filter_arg is None:
                 filter_arg = t
-        if "," in first_cve_tok or ";" in first_cve_tok or extra_cves:
+        if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or only_open or only_kev:
             batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
             run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
         else:
