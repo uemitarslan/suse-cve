@@ -1372,11 +1372,12 @@ def print_mitigation_block(mit: dict):
             print(f"     {CLR_CYAN}$ {rem['cmd']}{CLR_RESET}")
 
     if mit.get("suggestions"):
-        w_hdr = (
-            "Compensating Workarounds (Only if patch installation must be deferred):"
-            if mit.get("remediation")
-            else "Recommended SLES Workarounds (No patch released yet):"
-        )
+        if mit.get("remediation"):
+            w_hdr = "Compensating Workarounds (Only if patch installation must be deferred):"
+        elif has_released:
+            w_hdr = "Recommended SLES Workarounds (For unpatched releases/packages — see [PATCHES] for patched releases):"
+        else:
+            w_hdr = "Recommended SLES Workarounds (No patch released yet):"
         print(f"\n  {CLR_BOLD}{w_hdr}{CLR_RESET}")
         for idx, s in enumerate(mit["suggestions"], 1):
             print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
