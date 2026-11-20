@@ -896,7 +896,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     return sorted(releases)
 
 
-def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=False, allow_prompt=True):
+def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -1079,7 +1079,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             all_affected_pkgs.update(pkgs)
 
     mitigation_data = None
-    if with_mitigation:
+    if with_mitigation or config_mode:
         suse_intel_meta = web_map.pop("_SUSE_INTEL", {})
         open_pkgs = set()
         target_vuln_pkgs = set()
@@ -1292,6 +1292,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         "triage_status": triage_status
     }
 
+    if config_mode == "salt":
+        print(render_salt_config(cve, rel_arg, mitigation_data or {}, force_workaround=force_workaround))
+        sys.exit(0)
+    elif config_mode == "ansible":
+        print(render_ansible_config(cve, rel_arg, mitigation_data or {}, force_workaround=force_workaround))
+        sys.exit(0)
+
     if not raw_status_map:
         if as_json:
             payload = {
@@ -1444,6 +1451,321 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
 
     if mitigation_data:
         print_mitigation_block(mitigation_data)
+
+
+
+def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_workaround: bool = False) -> str:
+    safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
+    lines = [
+        f"# Auto-generated SaltStack State for {cve} (Target: {rel_arg})",
+        f"# Dry-run : salt -G 'os_family:Suse' state.apply {safe_cve} test=True",
+        f"# Apply   : salt -G 'os_family:Suse' state.apply {safe_cve}",
+        "#",
+        "# DISCLAIMER: Provided as-is without warranty. Service names, config paths (Tomcat/systemd/wrapper),",
+        "# and runtime flags may vary across SLES versions, SUMA/Uyuni, or custom setups. Test before production rollout.",
+        ""
+    ]
+
+    rems = mitigation_data.get("remediation") or []
+    sugs = mitigation_data.get("suggestions") or []
+
+    if rems and not force_workaround:
+        rem = rems[0]
+        cmd = rem["cmd"].split("  #")[0].strip()
+        is_micro = "transactional-update" in cmd
+        lines.extend([
+            f"{safe_cve}_refresh_and_patch:",
+            "  cmd.run:",
+            f"    - name: {cmd}",
+            (
+                f"    - unless: zypper --non-interactive list-patches --cve={cve} | grep -q 'No matching items found'"
+                if not is_micro
+                else "    - onlyif: which transactional-update >/dev/null 2>&1"
+            ),
+            ""
+        ])
+        if "REBOOT REQUIRED" in rem.get("title", ""):
+            lines.extend([
+                f"{safe_cve}_reboot_notice:",
+                "  test.show_notification:",
+                f"    - text: \"Patch for {cve} applied — schedule system reboot to activate updated kernel/core libraries.\"",
+                "    - require:",
+                f"      - cmd: {safe_cve}_refresh_and_patch",
+                ""
+            ])
+        return "\\n".join(lines)
+
+    has_systemd_reload = False
+    has_java_restart = False
+    step_idx = 0
+
+    for s in sugs:
+        cmd = s.get("cmd", "").strip()
+        title = s.get("title", "")
+        if not cmd or cmd.startswith("#") or cmd.startswith("true"):
+            lines.append(f"# {title}")
+            continue
+
+        step_idx += 1
+        sid = f"{safe_cve}_step_{step_idx}"
+
+        if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
+            m = re.search(r'JDK_JAVA_OPTIONS=([^"\\\\]+)', cmd)
+            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+            lines.extend([
+                f"{sid}_systemd_dir:",
+                "  file.directory:",
+                "    - name: /etc/systemd/system.conf.d",
+                "    - makedirs: True",
+                "",
+                f"{sid}_systemd_java_dropin:",
+                "  file.managed:",
+                "    - name: /etc/systemd/system.conf.d/99-cve-java.conf",
+                "    - contents: |",
+                "        [Manager]",
+                f"        DefaultEnvironment=\"JDK_JAVA_OPTIONS={flags}\"",
+                "    - require:",
+                f"      - file: {sid}_systemd_dir",
+                "",
+                f"{sid}_profile_java_dropin:",
+                "  file.managed:",
+                "    - name: /etc/profile.d/cve-java.sh",
+                "    - mode: '0644'",
+                "    - contents: |",
+                f"        export JDK_JAVA_OPTIONS=\"{flags}\"",
+                ""
+            ])
+            has_systemd_reload = True
+        elif "/etc/tomcat/conf.d" in cmd:
+            m = re.search(r'JAVA_OPTS="\\$\\{JAVA_OPTS\\} ([^"]+)"', cmd)
+            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+            lines.extend([
+                f"{sid}_tomcat_dropin:",
+                "  file.managed:",
+                "    - name: /etc/tomcat/conf.d/99-cve-mitigation.conf",
+                "    - contents: |",
+                f"        JAVA_OPTS=\"${{JAVA_OPTS}} {flags}\"",
+                "    - onlyif: test -d /etc/tomcat/conf.d",
+                ""
+            ])
+            has_java_restart = True
+        elif cmd.startswith("sysctl -w "):
+            kv = cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip()
+            if "=" in kv:
+                k_name, k_val = [x.strip() for x in kv.split("=", 1)]
+                lines.extend([
+                    f"{sid}_sysctl:",
+                    "  sysctl.present:",
+                    f"    - name: {k_name}",
+                    f"    - value: '{k_val}'",
+                    "    - config: /etc/sysctl.d/99-cve-mitigation.conf",
+                    ""
+                ])
+        elif "ps -ef | grep" in cmd:
+            lines.extend([
+                f"{sid}_verify_java_flags:",
+                "  cmd.run:",
+                "    - name: ps -ef | grep -E '[j]ava' || true",
+                ""
+            ])
+        else:
+            lines.extend([
+                f"{sid}_exec:",
+                "  cmd.run:",
+                f"    - name: {cmd}",
+                ""
+            ])
+
+    if has_systemd_reload:
+        lines.extend([
+            f"{safe_cve}_systemd_daemon_reload:",
+            "  cmd.run:",
+            "    - name: systemctl daemon-reload",
+            ""
+        ])
+    if has_java_restart:
+        lines.extend([
+            f"{safe_cve}_restart_java_services:",
+            "  cmd.run:",
+            "    - name: spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
+            ""
+        ])
+
+    return "\\n".join(lines)
+
+
+def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_workaround: bool = False) -> str:
+    safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
+    lines = [
+        "---",
+        f"# Auto-generated Ansible Playbook for {cve} (Target: {rel_arg})",
+        f"# Dry-run : ansible-playbook -i inventory.ini {safe_cve}.yml --check --diff",
+        f"# Apply   : ansible-playbook -i inventory.ini {safe_cve}.yml",
+        "#",
+        "# DISCLAIMER: Provided as-is without warranty. Service names, config paths (Tomcat/systemd/wrapper),",
+        "# and runtime flags may vary across SLES versions, SUMA/Uyuni, or custom setups. Test before production rollout.",
+        "",
+        f"- name: Remediate or mitigate {cve} on SUSE Enterprise Linux ({rel_arg})",
+        "  hosts: all",
+        "  become: true",
+        "  gather_facts: true",
+        "  tasks:"
+    ]
+
+    rems = mitigation_data.get("remediation") or []
+    sugs = mitigation_data.get("suggestions") or []
+
+    if rems and not force_workaround:
+        rem = rems[0]
+        cmd = rem["cmd"].split("  #")[0].strip()
+        is_micro = "transactional-update" in cmd
+        if is_micro:
+            lines.extend([
+                f"    - name: Apply SL Micro transactional patch for {cve}",
+                "      ansible.builtin.command:",
+                "        cmd: transactional-update patch",
+                "      register: tu_patch_result",
+                "      changed_when: tu_patch_result.rc == 0",
+                "      when: ansible_facts['os_family'] == 'Suse'",
+                "",
+                "    - name: Reboot SL Micro host to activate transactional snapshot",
+                "      ansible.builtin.reboot:",
+                f"        msg: \"Reboot triggered by {cve} transactional security update\"",
+                "      when: tu_patch_result is changed",
+                ""
+            ])
+        else:
+            needs_reboot = "REBOOT REQUIRED" in rem.get("title", "")
+            lines.extend([
+                f"    - name: Refresh zypper repositories and apply security patch for {cve}",
+                "      ansible.builtin.shell: |",
+                f"        zypper --non-interactive refresh && zypper --non-interactive patch --cve={cve}",
+                "      register: zypper_patch_out",
+                "      changed_when: \"'Nothing to do.' not in zypper_patch_out.stdout\"",
+                "      when: ansible_facts['os_family'] == 'Suse'",
+                "",
+                "    - name: Check for services using deleted libraries (zypper ps -s)",
+                "      ansible.builtin.command:",
+                "        cmd: zypper ps -s",
+                "      register: zypper_ps_out",
+                "      changed_when: false",
+                ""
+            ])
+            if needs_reboot:
+                lines.extend([
+                    f"    - name: Reboot host to activate kernel/core library updates for {cve}",
+                    "      ansible.builtin.reboot:",
+                    f"        msg: \"Reboot required after applying {cve} security patch\"",
+                    "      when: zypper_patch_out is changed",
+                    ""
+                ])
+        return "\\n".join(lines)
+
+    has_systemd_reload = False
+    has_java_restart = False
+
+    for s in sugs:
+        cmd = s.get("cmd", "").strip()
+        title = s.get("title", "").replace('"', '\"')
+        if not cmd or cmd.startswith("#") or cmd.startswith("true"):
+            lines.append(f"    # {title}")
+            continue
+
+        if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
+            m = re.search(r'JDK_JAVA_OPTIONS=([^"\\\\]+)', cmd)
+            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+            lines.extend([
+                "    - name: Ensure /etc/systemd/system.conf.d directory exists",
+                "      ansible.builtin.file:",
+                "        path: /etc/systemd/system.conf.d",
+                "        state: directory",
+                "        mode: '0755'",
+                "",
+                f"    - name: Configure systemd DefaultEnvironment JVM mitigation ({flags})",
+                "      ansible.builtin.copy:",
+                "        dest: /etc/systemd/system.conf.d/99-cve-java.conf",
+                "        mode: '0644'",
+                "        content: |",
+                "          [Manager]",
+                f"          DefaultEnvironment=\"JDK_JAVA_OPTIONS={flags}\"",
+                "      notify: Reload systemd daemon",
+                "",
+                f"    - name: Configure shell profile JVM mitigation ({flags})",
+                "      ansible.builtin.copy:",
+                "        dest: /etc/profile.d/cve-java.sh",
+                "        mode: '0644'",
+                "        content: |",
+                f"          export JDK_JAVA_OPTIONS=\"{flags}\"",
+                ""
+            ])
+            has_systemd_reload = True
+        elif "/etc/tomcat/conf.d" in cmd:
+            m = re.search(r'JAVA_OPTS="\\$\\{JAVA_OPTS\\} ([^"]+)"', cmd)
+            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+            lines.extend([
+                "    - name: Check if /etc/tomcat/conf.d exists",
+                "      ansible.builtin.stat:",
+                "        path: /etc/tomcat/conf.d",
+                "      register: tomcat_conf_dir",
+                "",
+                f"    - name: Configure Tomcat JVM mitigation drop-in ({flags})",
+                "      ansible.builtin.copy:",
+                "        dest: /etc/tomcat/conf.d/99-cve-mitigation.conf",
+                "        mode: '0644'",
+                "        content: |",
+                f"          JAVA_OPTS=\"${{JAVA_OPTS}} {flags}\"",
+                "      when: tomcat_conf_dir.stat.exists",
+                "      notify: Restart Java and SUSE Manager services",
+                ""
+            ])
+            has_java_restart = True
+        elif cmd.startswith("sysctl -w "):
+            kv = cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip()
+            if "=" in kv:
+                k_name, k_val = [x.strip() for x in kv.split("=", 1)]
+                lines.extend([
+                    f"    - name: Apply sysctl kernel mitigation ({k_name}={k_val})",
+                    "      ansible.posix.sysctl:",
+                    f"        name: {k_name}",
+                    f"        value: '{k_val}'",
+                    "        sysctl_file: /etc/sysctl.d/99-cve-mitigation.conf",
+                    "        reload: true",
+                    ""
+                ])
+        elif "ps -ef | grep" in cmd:
+            lines.extend([
+                f"    - name: {title}",
+                "      ansible.builtin.shell: ps -ef | grep -E '[j]ava' || true",
+                "      register: active_java_procs",
+                "      changed_when: false",
+                ""
+            ])
+        else:
+            lines.extend([
+                f"    - name: {title}",
+                "      ansible.builtin.shell: |",
+                f"        {cmd}",
+                ""
+            ])
+
+    if has_systemd_reload or has_java_restart:
+        lines.append("  handlers:")
+        if has_systemd_reload:
+            lines.extend([
+                "    - name: Reload systemd daemon",
+                "      ansible.builtin.systemd:",
+                "        daemon_reload: true",
+                ""
+            ])
+        if has_java_restart:
+            lines.extend([
+                "    - name: Restart Java and SUSE Manager services",
+                "      ansible.builtin.shell: |",
+                "        spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
+                ""
+            ])
+
+    return "\\n".join(lines)
 
 
 def print_mitigation_block(mit: dict):
@@ -1617,15 +1939,36 @@ if __name__ == "__main__":
             with_mitigation = True
             raw_args.remove(flag)
 
+    config_mode = None
+    for flag in ("--salt-config", "--salt"):
+        if flag in raw_args:
+            config_mode = "salt"
+            raw_args.remove(flag)
+    for flag in ("--ansible-config", "--ansible"):
+        if flag in raw_args:
+            config_mode = "ansible"
+            raw_args.remove(flag)
+
+    force_workaround = False
+    for flag in ("--workaround", "--force-workaround"):
+        if flag in raw_args:
+            force_workaround = True
+            raw_args.remove(flag)
+
+    if config_mode and not with_mitigation:
+        with_mitigation = True
+
     if len(raw_args) >= 1 and re.match(r'^CVE-\d{4}-\d+$', raw_args[0], re.IGNORECASE):
         raw_args.insert(0, "all")
     if len(raw_args) < 2:
-        print("Usage   : suse-cve <release> <cve> [status_filter] [--mitigate] [--json]")
+        print("Usage   : suse-cve <release> <cve> [status_filter] [--mitigate] [--salt-config | --ansible-config] [--workaround] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --salt-config > /srv/salt/cve_2026_98432.sls")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --ansible-config --workaround > cve_2026_98432.yml")
         print("          suse-cve all CVE-2026-98432 rel --json")
         print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
         sys.exit(1)
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
-    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation)
+    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround)
