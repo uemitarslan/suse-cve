@@ -896,7 +896,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     return sorted(releases)
 
 
-def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False):
+def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all'):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -1079,7 +1079,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             all_affected_pkgs.update(pkgs)
 
     mitigation_data = None
-    if with_mitigation or config_mode:
+    if True:  # Always compute remediation & mitigations for full default report
         suse_intel_meta = web_map.pop("_SUSE_INTEL", {})
         open_pkgs = set()
         target_vuln_pkgs = set()
@@ -1297,6 +1297,13 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         sys.exit(0)
     elif config_mode == "ansible":
         print(render_ansible_config(cve, rel_arg, mitigation_data or {}, force_workaround=force_workaround))
+        sys.exit(0)
+
+    if not as_json and view_mode in ("mitigate", "remediate"):
+        label = "MITIGATIONS (COMPENSATING WORKAROUNDS)" if view_mode == "mitigate" else "REMEDIATION (VENDOR PATCH)"
+        print(f"\n[{cve} | {rel_arg.upper()} | {label}]")
+        if mitigation_data:
+            print_mitigation_block(mitigation_data, view_mode=view_mode)
         sys.exit(0)
 
     if not raw_status_map:
@@ -1772,7 +1779,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
     return "\n".join(lines)
 
 
-def print_mitigation_block(mit: dict):
+def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     print(f"{CLR_MAG}[MITIGATION & MULTI-SOURCE ADVISORY INTEL]{CLR_RESET}")
 
     kev = mit.get("cisa_kev") or {}
@@ -1979,7 +1986,14 @@ if __name__ == "__main__":
         print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
         sys.exit(1)
 
-    with_mitigation = with_mitigation or with_remediation
+    if with_mitigation and not with_remediation:
+        view_mode = "mitigate"
+    elif with_remediation and not with_mitigation:
+        view_mode = "remediate"
+    else:
+        view_mode = "all"
+
+    with_mitigation = True
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
-    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround)
+    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
