@@ -168,4 +168,9 @@ check(
     "--only-kev retains only CISA KEV-listed vulnerabilities"
 )
 
+rc_pid, out_pid, _ = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432", "--json")
+piddata = json.loads(out_pid)
+act_val = next((r["action"] for r in piddata.get("rows", []) if r.get("cve") == "CVE-2026-98432"), "")
+check("SUSE-SLE-" in act_val and "SUSE Linux Enterprise" not in act_val, "Batch action column renders clean SUSE-SLE-* patch IDs instead of product names")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")

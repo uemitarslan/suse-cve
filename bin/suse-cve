@@ -2104,7 +2104,20 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         else:
             lc_str = str(lc) if lc else "ALL"
 
-        patch_ids = sorted({(p.get("patch_id") if isinstance(p, dict) else str(p)) for p in (item.get("patches") or []) if p})
+        raw_patches = item.get("patches") or {}
+        patch_entries = []
+        if isinstance(raw_patches, dict):
+            for plist in raw_patches.values():
+                if isinstance(plist, list):
+                    patch_entries.extend(plist)
+                elif plist:
+                    patch_entries.append(plist)
+        elif isinstance(raw_patches, list):
+            patch_entries.extend(raw_patches)
+        patch_ids = sorted(
+            {re.sub(r'\s*\([^)]*\)$', '', str(x.get("patch_id") or x.get("id") or x.get("patch") or "" if isinstance(x, dict) else x)).strip() for x in patch_entries if x},
+            key=lambda pid: (1 if "Live-Patching" in pid else 0, pid)
+        )
         if patch_ids:
             action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
         elif "NOT AFFECTED" in triage_upper:
