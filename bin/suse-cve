@@ -1478,7 +1478,7 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             "  cmd.run:",
             f"    - name: {cmd}",
             (
-                f"    - unless: zypper --non-interactive list-patches --cve={cve} | grep -q 'No matching items found'"
+                f"    - onlyif: zypper --non-interactive list-patches --cve={cve} | grep -q 'Needed'"
                 if not is_micro
                 else "    - onlyif: which transactional-update >/dev/null 2>&1"
             ),
