@@ -286,7 +286,7 @@ def fetch_web_data(cve_id: str, platform_regex):
 
         if found_status:
             web_all_prods_for_major.add(prod)
-            if pkg_cell and platform_regex.search(prod):
+            if pkg_cell and (platform_regex.search(prod) or found_status == "NOT AFFECTED"):
                 pkgs = extract_pkgs_from_cell(pkg_cell)
                 if pkgs:
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
@@ -1008,9 +1008,13 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     else:
         for st in ["RELEASED", "IN QA", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
             if st in raw_status_map and raw_status_map[st]:
-                output_dict[st] = {
-                    p: sorted(list(pkgs)) for p, pkgs in sorted(raw_status_map[st].items()) if pkgs
+                filtered_st = {
+                    p: sorted(list(pkgs))
+                    for p, pkgs in sorted(raw_status_map[st].items())
+                    if pkgs and (major == "ALL" or sp_regex.search(p))
                 }
+                if filtered_st:
+                    output_dict[st] = filtered_st
 
     sorted_patches = {k: patch_map[k] for k in sorted(patch_map.keys())}
 
