@@ -59,6 +59,7 @@ if USE_COLOR:
     PALETTE = {
         "RELEASED": {"header": "\033[1;32m", "pkg": "\033[32m"},
         "IN QA": {"header": "\033[1;33m", "pkg": "\033[33m"},
+        "IN PROGRESS": {"header": CLR_CYAN, "pkg": CLR_CYAN},
         "AFFECTED": {"header": "\033[1;31m", "pkg": "\033[31m"},
         "NOT AFFECTED": {"header": "\033[1;36m", "pkg": "\033[36m"},
         "WONT FIX": {"header": "\033[1;34m", "pkg": "\033[34m"},
@@ -99,6 +100,10 @@ def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
         return "ALL", "", re.compile(r"(?:12|15|16)", re.IGNORECASE)
+    m_micro = re.match(r"^(?:sl-?micro|micro)?-?([56])\.(\d+)$", s)
+    if m_micro:
+        maj, minor = m_micro.group(1), m_micro.group(2)
+        return f"MICRO{maj}", minor, re.compile(rf"(?:Enterprise|Linux)\s+Micro\s+{maj}\.{minor}\b", re.IGNORECASE)
 
     m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
     major = m.group(1) if m else "15"
@@ -291,6 +296,20 @@ def fetch_web_data(cve_id: str, platform_regex):
                 if pkgs:
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
 
+    suse_intel = {}
+    m_st = re.search(r"Overall state of this security issue:\s*([^<\n]+)", html, re.IGNORECASE)
+    if m_st:
+        suse_intel["state"] = m_st.group(1).strip()
+    m_rt = re.search(r"rated as having\s*<a[^>]*>([^<]+)</a>\s*severity", html, re.IGNORECASE)
+    if m_rt:
+        suse_intel["rating"] = m_rt.group(1).strip().upper()
+    m_v3 = re.search(r"CVSS v3 Scores.*?<td>Base Score</td>\s*<td>[^<]*</td>\s*<td>([^<]+)</td>\s*</tr>\s*<tr><td>Vector</td>\s*<td>[^<]*</td>\s*<td>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
+    if m_v3:
+        suse_intel["cvss3"] = f"{m_v3.group(1).strip()} ({m_v3.group(2).strip()})"
+    m_v4 = re.search(r"CVSS v4 Scores.*?<td>Base Score</td>\s*<td>([^<]+)</td>\s*</tr>\s*<tr><td>Vector</td>\s*<td>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
+    if m_v4:
+        suse_intel["cvss4"] = f"{m_v4.group(1).strip()} ({m_v4.group(2).strip()})"
+    web_map["_SUSE_INTEL"] = suse_intel
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
 
@@ -394,7 +413,7 @@ def fetch_ubuntu_notes(cve_id: str) -> list:
     return notes[:3]
 
 
-def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set) -> dict:
+def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set, suse_intel: dict = None) -> dict:
     """Combine CISA KEV, Red Hat Security Data (CC BY 4.0), Ubuntu Tracker, NVD, and SUSE Bugzilla."""
     nvd_url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
     description = ""
@@ -573,6 +592,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "redhat_mitigation": rh_info.get("mitigation", ""),
         "redhat_statement": rh_info.get("statement", ""),
         "ubuntu_notes": ub_notes,
+        "suse_intel": suse_intel or {},
         "bugzilla": bugzilla_urls,
         "vendor_refs": vendor_refs[:5],
         "suggestions": suggestions,
@@ -603,6 +623,11 @@ SLES_LIFECYCLE_FALLBACK = {
     "SLES 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2031-07-31"},
     "SLES 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2033-10-31"},
     "SLES 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2034-10-31"},
+    "SL Micro 5.4": {"general_eol": "2024-11-30", "ltss_eol": None},
+    "SL Micro 5.5": {"general_eol": "2026-04-30", "ltss_eol": None},
+    "SL Micro 6.0": {"general_eol": "2026-10-31", "ltss_eol": None},
+    "SL Micro 6.1": {"general_eol": "2028-04-30", "ltss_eol": None},
+    "SL Micro 6.2": {"general_eol": "2029-10-31", "ltss_eol": None},
 }
 
 
@@ -692,6 +717,9 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     releases = set()
 
     def extract_sles_tag(text: str):
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", text, re.IGNORECASE)
+        if m_mic:
+            return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
         low = text.lower()
         if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
             return None
@@ -820,7 +848,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 filtered_pkgs = filter_packages_for_platform(prod, pkgs)
                 if filtered_pkgs:
                     raw_status_map.setdefault(st, {}).setdefault(prod, set()).update(filtered_pkgs)
-                    if st in ("AFFECTED", "IN QA", "NOT AFFECTED") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
+                    if st in ("AFFECTED", "IN QA", "IN PROGRESS", "NOT AFFECTED") and "RELEASED" in raw_status_map and prod in raw_status_map["RELEASED"]:
                         raw_status_map["RELEASED"][prod] -= filtered_pkgs
                         if not raw_status_map["RELEASED"][prod]:
                             del raw_status_map["RELEASED"][prod]
@@ -857,6 +885,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         web_active_prods = (
             set(web_map.get("RELEASED", {}).keys())
             | set(web_map.get("IN QA", {}).keys())
+            | set(web_map.get("IN PROGRESS", {}).keys())
             | set(web_map.get("AFFECTED", {}).keys())
         )
         na_base_versions = set()
@@ -865,19 +894,20 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             if m_base:
                 na_base_versions.add(m_base.group(1))
             if na_prod not in web_active_prods:
-                for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+                for st_key in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
                     if st_key in raw_status_map and na_prod in raw_status_map[st_key]:
                         del raw_status_map[st_key][na_prod]
                         if not raw_status_map[st_key]:
                             del raw_status_map[st_key]
 
         for ver_str in na_base_versions:
-            for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+            for st_key in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
                 if st_key not in raw_status_map:
                     continue
                 for p_name in list(raw_status_map[st_key].keys()):
                     if p_name not in web_active_prods and p_name.endswith(f" {ver_str}") and "SUSE Linux Enterprise" in p_name:
-                        del raw_status_map[st_key][p_name]
+                        moved_pkgs = raw_status_map[st_key].pop(p_name)
+                        raw_status_map.setdefault("NOT AFFECTED", {}).setdefault(p_name, set()).update(moved_pkgs)
                 if not raw_status_map[st_key]:
                     del raw_status_map[st_key]
 
@@ -891,13 +921,14 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             del raw_status_map["NOT AFFECTED"]
 
     all_affected_pkgs = set()
-    for st_key in ("RELEASED", "IN QA", "AFFECTED"):
+    for st_key in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
         for pkgs in raw_status_map.get(st_key, {}).values():
             all_affected_pkgs.update(pkgs)
 
     mitigation_data = None
     if with_mitigation:
-        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs)
+        suse_intel_meta = web_map.pop("_SUSE_INTEL", {})
+        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, all_affected_pkgs, suse_intel_meta)
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
@@ -929,6 +960,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
 
     has_released = bool(raw_status_map.get("RELEASED"))
     has_qa = bool(raw_status_map.get("IN QA"))
+    has_in_progress = bool(raw_status_map.get("IN PROGRESS"))
     has_unpatched = bool(raw_status_map.get("AFFECTED"))
 
     if has_released and not has_unpatched:
@@ -1006,7 +1038,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             sys.exit(1)
 
     else:
-        for st in ["RELEASED", "IN QA", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
+        for st in ["RELEASED", "IN QA", "IN PROGRESS", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
             if st in raw_status_map and raw_status_map[st]:
                 filtered_st = {
                     p: sorted(list(pkgs))
@@ -1054,7 +1086,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
         print(f"  [1;31m[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.[0m")
-    elif not has_released and (has_unpatched or has_qa) and not with_mitigation:
+    elif not has_released and (has_unpatched or has_in_progress or has_qa) and not with_mitigation:
         print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
 
@@ -1089,7 +1121,16 @@ def print_mitigation_block(mit: dict):
         print(f"  \033[1;31m[!] CISA KEV ALERT: ACTIVELY EXPLOITED (added {kev.get('date_added')} | Ransomware: {kev.get('ransomware')})\033[0m")
 
     cwe_str = f" | {', '.join(mit['cwes'])}" if mit["cwes"] else ""
-    print(f"  {CLR_BOLD}CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
+    si = mit.get("suse_intel") or {}
+    if si:
+        sparts = []
+        if si.get("rating"): sparts.append(f"Rating: {si['rating']}")
+        if si.get("state"): sparts.append(f"State: {si['state']}")
+        if si.get("cvss3"): sparts.append(f"CVSS v3: {si['cvss3']}")
+        if si.get("cvss4"): sparts.append(f"CVSS v4: {si['cvss4']}")
+        if sparts:
+            print(f"  {CLR_BOLD}SUSE Advisory:{CLR_RESET} {' | '.join(sparts)}")
+    print(f"  {CLR_BOLD}NVD CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
 
     desc = re.sub(r'\s+', ' ', mit["description"]).strip()
     if len(desc) > 340:
