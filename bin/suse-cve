@@ -1374,12 +1374,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     for p, pkgs in sorted(raw_status_map[st].items())
                     if pkgs and (major == "ALL" or sp_regex.search(p))
                 }
-                if not filtered_st and st == "NOT AFFECTED":
-                    filtered_st = {
-                        p: sorted(list(pkgs))
-                        for p, pkgs in sorted(raw_status_map[st].items())
-                        if pkgs and ("suse linux enterprise" in p.lower() or "micro" in p.lower())
-                    }
+
                 if filtered_st:
                     output_dict[st] = filtered_st
 
