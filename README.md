@@ -1,6 +1,6 @@
 # suse-cve
 
-> Fast, precision-oriented CLI triage scanner and IaCgenerator for SUSE Linux Enterprise Server (**SLES 12, 15, 16**) and **SL Micro (5.x, 6.x)** -- combining local OUL SQLite indexing, live SUSE Security Advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
+> Fast, precision-oriented CLI triage scanner and IaC generator for SUSE Linux Enterprise Server (**SLES 12, 15, 16**) and **SL Micro (5.x, 6.x)** -- combining local OVAL SQLite indexing, live SUSE Security Advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
 
 `suse-cve` bridges the gap between static OVAL vulnerability feeds and authoritative SUSE Security Advisories. It gives administrators and security engineers an immediate executive triage summary -- classifying affected releases by **General Support**, **LTSS**, or **End-of-Life (EOL)** -- while generating ready-to-audit patch commands, compensating workarounds, structured JSON, and idempotent SaltStack/Ansible configurations.
 
@@ -29,7 +29,7 @@
 ## Installation
 
 ### Prerequisites
-- Python 3.6+ (`python3-lxml` recommended for fast OUL XML parsing)
+- Python 3.6+ (`python3-lxml` recommended for fast OVAL XML parsing)
 - `curl`, `sqlite3`h, `jq` (optional, for JSON pipeline filtering)
 - SLES 12, SLES 15, SLES 16, or SL Micro 5.x / 6.x
 
