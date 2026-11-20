@@ -1060,7 +1060,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                     prev = n
                 else:
                     if prev - start >= 2:
-                        out.append(f"{prefix}{start}-{prefix.split()[-1]}{prev}" if "SP" in prefix else f"{prefix}{start}-{prev}")
+                        out.append(f"{prefix}{start}-{prefix.split()[-1]}{prev}" if "SP" in prefix else f"{prefix}{start}-{prefix.split()[-1]}{prev}")
                     elif prev > start:
                         out.append(f"{prefix}{start}")
                         out.append(f"{prefix}{prev}")
@@ -1407,6 +1407,8 @@ if __name__ == "__main__":
             with_mitigation = True
             raw_args.remove(flag)
 
+    if len(raw_args) >= 1 and re.match(r'^CVE-\d{4}-\d+$', raw_args[0], re.IGNORECASE):
+        raw_args.insert(0, "all")
     if len(raw_args) < 2:
         print("Usage   : suse-cve <release> <cve> [status_filter] [--mitigate] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
