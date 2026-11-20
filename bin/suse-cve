@@ -723,6 +723,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "bugzilla": bugzilla_urls,
         "vendor_refs": vendor_refs[:5],
         "suggestions": list({s["cmd"]: s for s in suggestions}.values()),
+        "workaround_disclaimer": 'Note: Workarounds are provided as-is without warranty and may not apply 1:1 to every environment. Service names, config paths (e.g., Tomcat, systemd, or wrapper layouts), and runtime flags can vary across SLES releases, SUSE Manager/Uyuni, or custom deployments—verify and adapt to your local setup before applying in production.',
         "sources": [
             "NVD API v2.0 (Public Domain)",
             "CISA KEV Catalog (Public Domain)",
@@ -1506,6 +1507,9 @@ def print_mitigation_block(mit: dict):
         for idx, s in enumerate(mit["suggestions"], 1):
             print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
             print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
+        import textwrap
+        disc_txt = mit.get("workaround_disclaimer") or 'Note: Workarounds are provided as-is without warranty and may not apply 1:1 to every environment. Service names, config paths (e.g., Tomcat, systemd, or wrapper layouts), and runtime flags can vary across SLES releases, SUSE Manager/Uyuni, or custom deployments—verify and adapt to your local setup before applying in production.'
+        print(f"\n{CLR_DIM}{textwrap.fill(disc_txt, width=116, initial_indent='  ', subsequent_indent='  ')}{CLR_RESET}")
 
     print(f"\n  {CLR_DIM}Sources: {', '.join(mit.get('sources', []))}{CLR_RESET}\n")
 
