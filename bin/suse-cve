@@ -984,13 +984,20 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
     if with_mitigation:
         suse_intel_meta = web_map.pop("_SUSE_INTEL", {})
         open_pkgs = set()
-        for st_k in ("IN QA", "IN PROGRESS", "AFFECTED"):
+        target_vuln_pkgs = set()
+        for st_k in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
             for p_k, pkgs_v in raw_status_map.get(st_k, {}).items():
                 if major == "ALL" or sp_regex.search(p_k):
-                    open_pkgs.update(pkgs_v)
-        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, open_pkgs, suse_intel_meta)
+                    target_vuln_pkgs.update(pkgs_v)
+                    if st_k != "RELEASED":
+                        open_pkgs.update(pkgs_v)
+        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, target_vuln_pkgs, suse_intel_meta)
         if not open_pkgs and bool(raw_status_map.get("RELEASED")):
-            mitigation_data["suggestions"] = [{"title": "Official SUSE patches are already released for all target packages", "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"}]
+            mitigation_data["patch_released"] = True
+            mitigation_data["suggestions"].insert(0, {
+                "title": "Official SUSE patches are already released — apply when maintenance window permits (use workarounds below if deferred)",
+                "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"
+            })
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
