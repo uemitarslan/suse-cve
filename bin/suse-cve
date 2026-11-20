@@ -584,11 +584,12 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
             })
 
     # Dynamic extraction of explicit vendor flags / sysctls from SUSE/RH/Ubuntu/NVD text
+    ub_str = " ".join(str(x) for x in ub_notes) if isinstance(ub_notes, list) else str(ub_notes or "")
     raw_vendor_blob = " ".join([
-        description or "",
-        rh_info.get("mitigation", ""),
-        rh_info.get("statement", ""),
-        ub_notes or "",
+        str(description or ""),
+        str(rh_info.get("mitigation", "") or ""),
+        str(rh_info.get("statement", "") or ""),
+        ub_str,
         json.dumps(suse_intel or {})
     ])
     jvm_flags = sorted(set(re.findall(r"-XX:[+-][A-Za-z0-9_]+", raw_vendor_blob)))
