@@ -1493,7 +1493,7 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
                 f"      - cmd: {safe_cve}_refresh_and_patch",
                 ""
             ])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     has_systemd_reload = False
     has_java_restart = False
@@ -1591,7 +1591,7 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             ""
         ])
 
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_workaround: bool = False) -> str:
@@ -1659,7 +1659,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
                     "      when: zypper_patch_out is changed",
                     ""
                 ])
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     has_systemd_reload = False
     has_java_restart = False
@@ -1765,7 +1765,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
                 ""
             ])
 
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def print_mitigation_block(mit: dict):
