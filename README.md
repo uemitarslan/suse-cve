@@ -46,8 +46,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]
-suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--json]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json]
 suse-cve --sync
 ```
 
@@ -63,6 +63,8 @@ suse-cve --sync
 | `--mitigate`, `-m` | No | Focus output or IaC generation strictly on compensating workarounds / hardening | `--mitigate` |
 | `--salt-config` | No | Output an idempotent SaltStack `.sls` state file | `--remediate --salt-config` |
 | `--ansible-config` | No | Output an idempotent Ansible YAML playbook | `--mitigate --ansible-config` |
+| `--only-open` | No | In batch mode, show only open/pending CVEs (exclude `PATCHED` & `NOT AFFECTED`) | `--only-open` |
+| `--only-kev` | No | In batch mode, show only CVEs listed in the CISA KEV catalog | `--only-kev` |
 | `--json` | No | Emit structured JSON for CI/CD pipelines and automation | `--json` |
 | `--sync` | No | Download latest OVAL dumps and rebuild the local SQLite index | `suse-cve --sync` |
 

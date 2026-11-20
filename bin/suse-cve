@@ -2013,7 +2013,7 @@ def extract_batch_cves(cve_tokens, file_path=None):
     return cves
 
 
-def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all"):
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
     """Modular batch orchestrator that delegates each CVE to query(..., as_json=True) without altering single-CVE logic."""
     import io
     import contextlib
@@ -2053,7 +2053,9 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         "patched": 0,
         "affected_or_pending": 0,
         "cisa_kev": 0,
+        "displayed": 0,
     }
+    filtered_results = []
 
     rows = []
     for item in results:
@@ -2111,6 +2113,13 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
             suse_state = suse_intel.get("state") or "Pending"
             action_str = f"Patch {suse_state} (see --mitigate)"
 
+        is_open = not ("NOT AFFECTED" in triage_upper or triage_upper.startswith("PATCHED") or triage_upper.startswith("RELEASED"))
+        if only_open and not is_open:
+            continue
+        if only_kev and not is_kev:
+            continue
+
+        filtered_results.append(item)
         rows.append({
             "cve": item.get("cve", ""),
             "status": triage_short,
@@ -2120,14 +2129,16 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
             "action": action_str,
         })
 
+    summary["displayed"] = len(rows)
     if as_json:
         payload = {
             "batch": True,
             "release": rel_arg,
             "filter": status_filter or "ALL",
+            "batch_filters": {"only_open": only_open, "only_kev": only_kev},
             "summary": summary,
             "rows": rows,
-            "results": results,
+            "results": filtered_results,
             "errors": errors,
         }
         print(json.dumps(payload, indent=2))
@@ -2143,6 +2154,8 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
     header = f"  {'CVE':<{w_cve}}  {'STATUS':<{w_st}}  {'SEVERITY':<{w_sev}}  {'LIFECYCLE':<{w_lc}}  PATCHES / ACTION"
     print(f"{CLR_BOLD}{header}{CLR_RESET}")
     print("  " + "-" * (len(header) - 2))
+    if not rows:
+        print(f"  {CLR_DIM}No CVEs matched the active batch filter (--only-open / --only-kev).{CLR_RESET}")
     for r in rows:
         st_up = r["status"].upper()
         st_col = CLR_CYAN if ("NOT AFFECTED" in st_up or st_up.startswith("PATCHED") or st_up.startswith("RELEASED")) else CLR_WARN
@@ -2169,6 +2182,14 @@ if __name__ == "__main__":
     as_json = "--json" in raw_args
     if as_json:
         raw_args.remove("--json")
+
+    only_open = "--only-open" in raw_args
+    if only_open:
+        raw_args.remove("--only-open")
+
+    only_kev = "--only-kev" in raw_args
+    if only_kev:
+        raw_args.remove("--only-kev")
 
     with_remediation = False
     for flag in ("--remediate", "--fix"):
@@ -2225,8 +2246,8 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]")
-        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--json]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json]")
+        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
         print("          suse-cve 15sp7 --file cves.txt --json                 (Batch triage from file with JSON)")
@@ -2260,7 +2281,7 @@ if __name__ == "__main__":
             else:
                 cve_tokens.append(extra)
         batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
-        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
     else:
         first_cve_tok = raw_args[1]
         extra_tokens = raw_args[2:]
@@ -2270,6 +2291,6 @@ if __name__ == "__main__":
                 filter_arg = t
         if "," in first_cve_tok or ";" in first_cve_tok or extra_cves:
             batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-            run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+            run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
         else:
             query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)

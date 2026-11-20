@@ -148,4 +148,24 @@ check(stdin_proc.returncode == 0 and sdata.get("release") == "all" and sdata.get
 rc_bad_b, _, err_bad_b = run_cli("15sp7", "CVE-2026-97876,INVALID-CVE")
 check(rc_bad_b != 0 and "Invalid CVE identifier" in err_bad_b, "Rejects batch input containing malformed CVE identifiers")
 
+rc_fo, out_fo, _ = run_cli("12sp5", "CVE-2026-97876,CVE-2026-98432", "--only-open", "--json")
+fodata = json.loads(out_fo)
+check(
+    rc_fo == 0
+    and fodata.get("batch_filters", {}).get("only_open") is True
+    and fodata.get("summary", {}).get("displayed") == len(fodata.get("rows", []))
+    and all("NOT AFFECTED" not in r["status"].upper() and not r["status"].upper().startswith("PATCHED") for r in fodata.get("rows", [])),
+    "--only-open filters out NOT AFFECTED / PATCHED rows while preserving summary totals"
+)
+
+rc_fk, out_fk, _ = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432", "--only-kev", "--json")
+fkdata = json.loads(out_fk)
+check(
+    rc_fk == 0
+    and fkdata.get("batch_filters", {}).get("only_kev") is True
+    and fkdata.get("summary", {}).get("displayed") == len(fkdata.get("rows", []))
+    and all("[KEV!]" in r["severity"] for r in fkdata.get("rows", [])),
+    "--only-kev retains only CISA KEV-listed vulnerabilities"
+)
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")
