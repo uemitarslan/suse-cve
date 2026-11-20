@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import signal
 import sys
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 import os
 import re
 import json
