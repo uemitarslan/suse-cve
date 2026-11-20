@@ -30,7 +30,7 @@
 
 ### Prerequisites
 - Python 3.6+ (`python3-lxml` recommended for fast OVAL XML parsing)
-- `curl`, `sqlite3`h, `jq` (optional, for JSON pipeline filtering)
+- `curl`, `sqlite3`, `jq` (optional, for JSON pipeline filtering)
 - SLES 12, SLES 15, SLES 16, or SL Micro 5.x / 6.x
 
 ### Automated Install
@@ -46,7 +46,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <CVE-ID> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--json]
 suse-cve --sync
 ```
 
@@ -55,7 +56,8 @@ suse-cve --sync
 | Parameter | Required | Description | Examples |
 |---|---|---|---|
 | `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, 15sp7`, 16.0`, `micro6.1`, `all` |
-| `<CVE-ID>` | Yes | CVE identifier (case-insensitive, trailing punctuation stripped) | `CVE-2026-98432`, `2026-98432` |
+| `<cve[,cve2,...]>` | Yes* | Single CVE or comma-separated CVE list (case-insensitive, deduplicated) | `CVE-2026-98432`, `CVE-2026-97876,CVE-2026-98432` |
+| `--file`, `-f` | Yes* | Read CVE IDs from file or `-` for `stdin` (`#` comments & blank lines ignored) | `--file cves.txt`, `-f -` |
 | `[status_filter]` | No | Restrict detail output to a specific patch status | `rel`, `qa`, `aff`, `inp`, `wont` |
 | `--remediate` | No | Focus output or IaC generation strictly on official vendor patch remediation | `--remediate` |
 | `--mitigate`, `-m` | No | Focus output or IaC generation strictly on compensating workarounds / hardening | `--mitigate` |
@@ -98,6 +100,18 @@ suse-cve 15sp7 CVE-2026-97876 --mitigate --ansible-config > cve_2026_97876.yml
 suse-cve 15sp7 CVE-2026-98432 rel --json | jq '{triage: .meta.triage_status, lifecycle: .meta.target_lifecycle, patches: .patches}'
 ```
 
+### 6. Modular Batch Triage (Comma-Separated, File & Stdin Pipelines)
+```bash
+# Comma-separated batch triage for a specific release
+suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432
+
+# Batch triage from a file (# comments and blank lines ignored) with structured JSON
+suse-cve 15sp7 --file cves.txt --json | jq '{summary, rows}'
+
+# Pipe CVE IDs via stdin across all releases
+printf "CVE-2026-97876\nCVE-2026-98432\n" | suse-cve -f -
+```
+
 ---
 
 ## Verification & Regression Test Suite
@@ -112,11 +126,11 @@ python3 tests/test_suse_cve.py
 
 ## Data Sources & Attribution
 
-- +*SUSE Security Advisories & OVAL Feeds:** `suse.com/security/cve/` & `ftp.suse.com/pub/projects/security/oval/`
+- **SUSE Security Advisories & OVAL Feeds:** `suse.com/security/cve/` & `ftp.suse.com/pub/projects/security/oval/`
 - **NVD API v2.0:** National Vulnerability Database (Public Domain)
-- +*CISA KEV Catalog:** Cybersecurity and Infrastructure Security Agency (Public Domain)
+- **CISA KEV Catalog:** Cybersecurity and Infrastructure Security Agency (Public Domain)
 - **Red Hat Security Data API:** Red Hat Product Security (licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))
-- +*Ubuntu CVE Tracker:** Canonical Security Team (licensed under [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/))
+- **Ubuntu CVE Tracker:** Canonical Security Team (licensed under [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/))
 - **EndOfLife.date API:** Community-maintained SLES / SL Micro lifecycle schedule (licensed under [MIT](https://github.com/endoflife-date/endoflife.date/blob/master/LICENSE))
 
 ---
