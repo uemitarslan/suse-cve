@@ -1937,8 +1937,14 @@ if __name__ == "__main__":
     if as_json:
         raw_args.remove("--json")
 
+    with_remediation = False
+    for flag in ("--remediate", "--fix"):
+        if flag in raw_args:
+            with_remediation = True
+            raw_args.remove(flag)
+
     with_mitigation = False
-    for flag in ("--mitigate", "-m", "--mitigation"):
+    for flag in ("--mitigate", "-m", "--mitigation", "--workaround"):
         if flag in raw_args:
             with_mitigation = True
             raw_args.remove(flag)
@@ -1953,26 +1959,27 @@ if __name__ == "__main__":
             config_mode = "ansible"
             raw_args.remove(flag)
 
-    force_workaround = False
-    for flag in ("--workaround", "--force-workaround"):
-        if flag in raw_args:
-            force_workaround = True
-            raw_args.remove(flag)
+    # In IaC generation mode: --mitigate forces compensating workarounds; --remediate applies vendor patches
+    force_workaround = bool(config_mode and with_mitigation and not with_remediation)
 
-    if config_mode and not with_mitigation:
-        with_mitigation = True
+    if config_mode and not (with_mitigation or with_remediation):
+        with_remediation = True
 
     if len(raw_args) >= 1 and re.match(r'^CVE-\d{4}-\d+$', raw_args[0], re.IGNORECASE):
         raw_args.insert(0, "all")
     if len(raw_args) < 2:
-        print("Usage   : suse-cve <release> <cve> [status_filter] [--mitigate] [--salt-config | --ansible-config] [--workaround] [--json]")
+        print("Usage   : suse-cve <release> <cve> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
-        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate")
-        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --salt-config > /srv/salt/cve_2026_98432.sls")
-        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --ansible-config --workaround > cve_2026_98432.yml")
+        print("          suse-cve 15sp7 CVE-2026-98432 --remediate   (Vendor patch remediation + fallback workarounds)")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate    (Compensating workarounds / hardening)")
+        print("          suse-cve 15sp7 CVE-2026-98432 --remediate --salt-config   (SaltStack patch state)")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --salt-config    (SaltStack workaround state)")
+        print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --ansible-config (Ansible workaround playbook)")
         print("          suse-cve all CVE-2026-98432 rel --json")
         print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
         sys.exit(1)
+
+    with_mitigation = with_mitigation or with_remediation
 
     filter_arg = raw_args[2] if len(raw_args) > 2 else None
     query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround)
