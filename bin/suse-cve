@@ -969,7 +969,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 if major == "ALL" or sp_regex.search(p_k):
                     open_pkgs.update(pkgs_v)
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, open_pkgs, suse_intel_meta)
-        if not open_pkgs and has_released:
+        if not open_pkgs and bool(raw_status_map.get("RELEASED")):
             mitigation_data["workarounds"] = [{"title": "Official SUSE patches are already released for all target packages", "cmd": "zypper refresh && zypper patch  # Apply released SUSE security updates"}]
 
     lifecycle_map = load_sles_lifecycle()
