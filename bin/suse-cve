@@ -1093,7 +1093,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
             (major == "ALL" or sp_regex.search(p_k))
             for p_k in raw_status_map.get("RELEASED", {}).keys()
         )
-        if not open_pkgs and target_has_released:
+        if (not open_pkgs or major == "ALL") and target_has_released:
             matched_patch_ids = []
             for p_k, p_list in patch_map.items():
                 if major == "ALL" or sp_regex.search(p_k):
@@ -1101,15 +1101,20 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                         pid = p_item.split(" (")[0].strip()
                         if pid and pid not in matched_patch_ids:
                             matched_patch_ids.append(pid)
+            needs_reboot = any(
+                p.startswith(("kernel-", "glibc", "systemd", "xen", "dbus"))
+                for p in target_vuln_pkgs
+            )
+            post_action = "REBOOT REQUIRED after patching" if needs_reboot else "Restart affected daemons (verify via 'zypper ps -s')"
             is_micro_target = major.startswith("MICRO") or (
                 major == "ALL" and any("Micro" in k for k in patch_map.keys()) and not any("Server" in k for k in patch_map.keys())
             )
             if is_micro_target:
                 rem_cmd = f"transactional-update patch && reboot  # Or: transactional-update pkg in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "transactional-update patch && reboot"
-                rem_title = f"Apply released SL Micro transactional patch for {cve} (reboot required)"
+                rem_title = f"Apply released SL Micro transactional patch for {cve} (REBOOT REQUIRED)"
             else:
-                rem_cmd = f"zypper refresh && zypper patch --cve={cve}" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
-                rem_title = f"Apply released SUSE security patch for {cve}"
+                rem_cmd = f"zypper refresh && zypper patch --cve={cve} && zypper ps -s" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
+                rem_title = f"Apply released SUSE security patch for {cve} ({post_action})"
             mitigation_data["remediation"] = [{
                 "title": rem_title,
                 "cmd": rem_cmd
@@ -1173,7 +1178,7 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
                 else:
                     has_unpatched = True
 
-    if has_unpatched and mitigation_data and "remediation" in mitigation_data:
+    if has_unpatched and major != "ALL" and mitigation_data and "remediation" in mitigation_data:
         del mitigation_data["remediation"]
 
     if has_released and not has_qa and not has_in_progress and not has_unpatched:
@@ -1455,21 +1460,18 @@ def print_mitigation_block(mit: dict):
     if not (str(mit["cvss"]).startswith("N/A") and (si.get("cvss3") or si.get("cvss4"))):
         print(f"  {CLR_BOLD}NVD CVSS:{CLR_RESET} {mit['cvss']} | {CLR_BOLD}Vector:{CLR_RESET} {mit['attack_vector']}{cwe_str}")
 
+    import textwrap
     desc = re.sub(r'\s+', ' ', mit["description"]).strip()
-    if len(desc) > 340:
-        desc = desc[:337] + "..."
-    print(f"  {CLR_BOLD}Summary:{CLR_RESET} {desc}")
+    print(textwrap.fill(f"Summary: {desc}", width=116, initial_indent="  ", subsequent_indent="  ").replace("Summary:", f"{CLR_BOLD}Summary:{CLR_RESET}", 1))
 
     if mit.get("redhat_mitigation") and "see the security bulletin" not in mit["redhat_mitigation"].lower():
         print(f"\n  {CLR_BOLD}Red Hat Security Mitigation (CC BY 4.0):{CLR_RESET}")
-        print(f"  {mit['redhat_mitigation']}")
+        print(textwrap.fill(mit["redhat_mitigation"], width=116, initial_indent="  ", subsequent_indent="  "))
 
     if mit.get("redhat_statement"):
-        stmt = mit["redhat_statement"]
-        if len(stmt) > 320:
-            stmt = stmt[:317] + "..."
+        stmt = re.sub(r'\s+', ' ', mit["redhat_statement"]).strip()
         print(f"\n  {CLR_BOLD}Red Hat Statement:{CLR_RESET}")
-        print(f"  {stmt}")
+        print(textwrap.fill(stmt, width=116, initial_indent="  ", subsequent_indent="  "))
 
     if mit.get("ubuntu_notes"):
         print(f"\n  {CLR_BOLD}Ubuntu Security Maintainer Notes:{CLR_RESET}")
