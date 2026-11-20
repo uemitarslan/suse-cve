@@ -1214,16 +1214,16 @@ def query(rel_arg, cve_arg, status_filter=None, as_json=False, with_mitigation=F
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
-    c_rel = PALETTE["RELEASED"]["pkg"]
-    c_qa = PALETTE["IN QA"]["pkg"]
-    c_aff = PALETTE["AFFECTED"]["pkg"]
-    c_aff_b = PALETTE["AFFECTED"]["header"]
-    c_na = PALETTE["NOT AFFECTED"]["pkg"]
+    c_rel = PALETTE.get("RELEASED", {}).get("pkg", "")
+    c_qa = PALETTE.get("IN QA", {}).get("pkg", "")
+    c_aff = PALETTE.get("AFFECTED", {}).get("pkg", "")
+    c_aff_b = PALETTE.get("AFFECTED", {}).get("header", "")
+    c_na = PALETTE.get("NOT AFFECTED", {}).get("pkg", "")
 
     if triage_status.startswith("PATCHED") or triage_status.startswith("NOT AFFECTED"):
-        st_color = PALETTE["RELEASED"]["header"]
+        st_color = PALETTE.get("RELEASED", {}).get("header", "")
     elif triage_status.startswith("PARTIALLY PATCHED") or triage_status.startswith("IN QA"):
-        st_color = PALETTE["IN QA"]["header"]
+        st_color = PALETTE.get("IN QA", {}).get("header", "")
     elif triage_status.startswith("IN PROGRESS"):
         st_color = CLR_CYAN
     else:
