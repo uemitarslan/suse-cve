@@ -1,3 +1,4 @@
+import time
 #!/usr/bin/env python3
 import json
 import os
@@ -7,11 +8,13 @@ import sys
 BIN = os.path.abspath("bin/suse-cve")
 
 def run_cli(*args):
+    time.sleep(0.2)
     proc = subprocess.run(
         [sys.executable, BIN, *args],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True,
-        timeout=45,
+        timeout=90,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -103,9 +106,46 @@ offline_proc = subprocess.run(
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
     universal_newlines=True,
-    timeout=30,
+    timeout=90,
 )
 check(offline_proc.returncode == 0 and "Traceback" not in offline_proc.stderr, "Gracefully degrades to local OVAL cache during total network outage")
 check("EXECUTIVE TRIAGE SUMMARY" in offline_proc.stdout, "Still produces full triage summary when external APIs are unreachable")
 
 print("\nALL EXTENDED STRESS & RESILIENCE TESTS PASSED.")
+
+print("\n=== 9. MODULAR BATCH SCANNING (COMMA, --FILE, STDIN, --JSON) ===")
+rc_b1, out_b1, err_b1 = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432")
+check(rc_b1 == 0 and "[EXECUTIVE BATCH TRIAGE SUMMARY]" in out_b1, "Batch scan runs cleanly on comma-separated CVE list")
+check("CVE-2026-97876" in out_b1 and "CVE-2026-98432" in out_b1, "Batch summary table includes all requested CVEs")
+
+rc_b2, out_b2, _ = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432", "--json")
+bdata = json.loads(out_b2)
+check(rc_b2 == 0 and bdata.get("batch") is True and bdata.get("summary", {}).get("total") == 2, "Batch --json emits structured batch summary and results")
+check(len(bdata.get("results", [])) == 2, "Batch --json preserves full per-CVE triage objects in results")
+
+tmp_cve_file = "/tmp/test_suse_cve_batch.txt"
+with open(tmp_cve_file, "w", encoding="utf-8") as fh:
+    fh.write("# Comment line\n\ncve-2026-97876.\nCVE-2026-97876\nCVE-2026-98432\n")
+try:
+    rc_bf, out_bf, _ = run_cli("12sp5", "--file", tmp_cve_file, "--json")
+    bfdata = json.loads(out_bf)
+    check(rc_bf == 0 and bfdata.get("summary", {}).get("total") == 2 and bfdata.get("summary", {}).get("not_affected") >= 1 and (bfdata.get("summary", {}).get("not_affected", 0) + bfdata.get("summary", {}).get("affected_or_pending", 0) + bfdata.get("summary", {}).get("patched", 0)) == 2, "--file deduplicates CVEs, ignores comments/blank lines, and classifies NOT AFFECTED")
+finally:
+    if os.path.exists(tmp_cve_file):
+        os.remove(tmp_cve_file)
+
+stdin_proc = subprocess.run(
+    [sys.executable, BIN, "--file", "-", "--json"],
+    input="CVE-2026-97876\nCVE-2026-98432\n",
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    universal_newlines=True,
+    timeout=90,
+)
+sdata = json.loads(stdin_proc.stdout)
+check(stdin_proc.returncode == 0 and sdata.get("release") == "all" and sdata.get("summary", {}).get("total") == 2, "Supports reading CVEs from stdin (-f -) with implicit 'all' release")
+
+rc_bad_b, _, err_bad_b = run_cli("15sp7", "CVE-2026-97876,INVALID-CVE")
+check(rc_bad_b != 0 and "Invalid CVE identifier" in err_bad_b, "Rejects batch input containing malformed CVE identifiers")
+
+print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")

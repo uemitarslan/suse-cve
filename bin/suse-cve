@@ -200,7 +200,7 @@ def fetch_web_data(cve_id: str, platform_regex):
 
     try:
         proc = subprocess.run(
-            ["curl", "-sIL", "--max-time", "10", url],
+            ["curl", "-sIL", "--connect-timeout", "4", "--max-time", "10", url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
@@ -216,7 +216,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                 web_last_modified_str = raw_web_ts
 
         proc_body = subprocess.run(
-            ["curl", "-sL", "--max-time", "10", url],
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "10", url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
@@ -343,7 +343,7 @@ def fetch_cisa_kev(cve_id: str):
         if need_download:
             os.makedirs(DATA_DIR, exist_ok=True)
             subprocess.run(
-                ["curl", "-sL", "--max-time", "8", "-o", cache_file, kev_url],
+                ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-o", cache_file, kev_url],
                 stderr=subprocess.DEVNULL,
                 check=False
             )
@@ -373,7 +373,7 @@ def fetch_redhat_intel(cve_id: str) -> dict:
     res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url}
     try:
         proc = subprocess.run(
-            ["curl", "-sL", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", rh_url],
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", rh_url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
@@ -409,7 +409,7 @@ def fetch_ubuntu_notes(cve_id: str) -> list:
     notes = []
     try:
         proc = subprocess.run(
-            ["curl", "-sL", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", ub_url],
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", ub_url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
@@ -442,7 +442,7 @@ def fetch_suse_bugzilla_workarounds(bugzilla_urls: list) -> list:
         api_url = f"https://bugzilla.suse.com/rest/bug/{bz_id}/comment"
         try:
             proc = subprocess.run(
-                ["curl", "-sL", "--max-time", "6", "-H", "User-Agent: suse-cve-cli/1.0", api_url],
+                ["curl", "-sL", "--connect-timeout", "4", "--max-time", "6", "-H", "User-Agent: suse-cve-cli/1.0", api_url],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 check=True
@@ -477,7 +477,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
     try:
         proc = subprocess.run(
-            ["curl", "-sL", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", nvd_url],
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", nvd_url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
@@ -781,7 +781,7 @@ def load_sles_lifecycle() -> dict:
         if need_fetch:
             os.makedirs(DATA_DIR, exist_ok=True)
             subprocess.run(
-                ["curl", "-sL", "--max-time", "5", "-o", cache_file, api_url],
+                ["curl", "-sL", "--connect-timeout", "4", "--max-time", "5", "-o", cache_file, api_url],
                 stderr=subprocess.DEVNULL,
                 check=False
             )
@@ -902,7 +902,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     return sorted(releases)
 
 
-def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all'):
+def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all', allow_prompt: bool = True):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -1964,6 +1964,199 @@ def build_index():
     print(f"Index built successfully! {total_count} entries indexed.\n")
 
 
+
+def extract_batch_cves(cve_tokens, file_path=None):
+    """Parse, normalize, validate, and deduplicate CVE identifiers from CLI tokens and/or file/stdin."""
+    raw_items = []
+    if file_path is not None:
+        if file_path == "-":
+            lines = sys.stdin.read().splitlines()
+        else:
+            if not os.path.exists(file_path):
+                print(f"Error: CVE input file not found: {file_path}", file=sys.stderr)
+                sys.exit(1)
+            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().splitlines()
+        for line in lines:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            for part in re.split(r"[\s,;]+", line):
+                if part.strip():
+                    raw_items.append(part.strip())
+
+    for tok in cve_tokens:
+        for part in re.split(r"[\s,;]+", tok):
+            if part.strip():
+                raw_items.append(part.strip())
+
+    cves = []
+    seen = set()
+    invalid = []
+    for item in raw_items:
+        norm = item.strip().rstrip(".,;:").upper()
+        if not norm.startswith("CVE-"):
+            norm = f"CVE-{norm}"
+        if not re.match(r"^CVE-\d{4}-\d{4,}$", norm):
+            invalid.append(item)
+            continue
+        if norm not in seen:
+            seen.add(norm)
+            cves.append(norm)
+
+    if invalid:
+        print(f"Error: Invalid CVE identifier(s) in batch input: {', '.join(invalid)}", file=sys.stderr)
+        sys.exit(1)
+    if not cves:
+        print("Error: No valid CVE identifiers provided for batch scan.", file=sys.stderr)
+        sys.exit(1)
+    return cves
+
+
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all"):
+    """Modular batch orchestrator that delegates each CVE to query(..., as_json=True) without altering single-CVE logic."""
+    import io
+    import contextlib
+
+    results = []
+    errors = []
+
+    for cve in cve_list:
+        buf = io.StringIO()
+        err_buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
+                query(
+                    rel_arg,
+                    cve,
+                    status_filter,
+                    as_json=True,
+                    with_mitigation=with_mitigation,
+                    config_mode=config_mode,
+                    force_workaround=force_workaround,
+                    view_mode=view_mode,
+                )
+        except SystemExit as exc:
+            if exc.code not in (0, None):
+                err_msg = err_buf.getvalue().strip() or f"Exited with code {exc.code}"
+                errors.append({"cve": cve, "error": err_msg})
+                continue
+        raw_out = buf.getvalue().strip()
+        if raw_out:
+            results.append(json.loads(raw_out))
+
+    summary = {
+        "total": len(cve_list),
+        "scanned": len(results),
+        "errors": len(errors),
+        "not_affected": 0,
+        "patched": 0,
+        "affected_or_pending": 0,
+        "cisa_kev": 0,
+    }
+
+    rows = []
+    for item in results:
+        meta = item.get("meta", {})
+        mit = item.get("mitigation", {}) or {}
+        suse_intel = mit.get("suse_intel", {}) or {}
+        kev_raw = mit.get("cisa_kev")
+        kev_intel = kev_raw if isinstance(kev_raw, dict) else {"in_kev": bool(kev_raw and "YES" in str(kev_raw).upper())}
+
+        triage_full = meta.get("triage_status", "UNKNOWN")
+        triage_short = triage_full.split("(", 1)[0].strip() if "(" in triage_full else triage_full
+        triage_upper = triage_short.upper()
+
+        if "NOT AFFECTED" in triage_upper:
+            summary["not_affected"] += 1
+        elif "UNPATCHED" in triage_upper or "PARTIALLY" in triage_upper or "IN QA" in triage_upper or "AFFECTED" in triage_upper or "PENDING" in triage_upper:
+            summary["affected_or_pending"] += 1
+        elif "PATCHED" in triage_upper or "RELEASED" in triage_upper:
+            summary["patched"] += 1
+        else:
+            summary["affected_or_pending"] += 1
+
+        is_kev = bool(kev_intel.get("in_kev") or kev_intel.get("listed") or kev_intel.get("known_exploited"))
+        if is_kev:
+            summary["cisa_kev"] += 1
+
+        cvss_raw = mit.get("cvss")
+        cvss_dict = cvss_raw if isinstance(cvss_raw, dict) else {}
+        rating = suse_intel.get("rating") or cvss_dict.get("severity") or ""
+        cvss = suse_intel.get("cvss3") or cvss_dict.get("score") or (cvss_raw if isinstance(cvss_raw, str) else "")
+        cvss_short = "" if (not cvss or str(cvss).strip().upper() == "N/A") else str(cvss).split()[0]
+        if not rating and cvss_short:
+            try:
+                sc = float(cvss_short)
+                rating = "CRITICAL" if sc >= 9.0 else ("HIGH" if sc >= 7.0 else ("MEDIUM" if sc >= 4.0 else "LOW"))
+            except ValueError:
+                rating = "N/A"
+        rating = rating or "N/A"
+        sev_str = f"{rating} ({cvss_short})" if cvss_short else str(rating)
+        if is_kev:
+            sev_str += " [KEV!]"
+
+        lc = meta.get("target_lifecycle", {})
+        if isinstance(lc, dict):
+            lc_str = lc.get("state") or lc.get("label") or "ALL"
+        else:
+            lc_str = str(lc) if lc else "ALL"
+
+        patch_ids = sorted({(p.get("patch_id") if isinstance(p, dict) else str(p)) for p in (item.get("patches") or []) if p})
+        if patch_ids:
+            action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
+        elif "NOT AFFECTED" in triage_upper:
+            action_str = "None (Not Affected)"
+        else:
+            suse_state = suse_intel.get("state") or "Pending"
+            action_str = f"Patch {suse_state} (see --mitigate)"
+
+        rows.append({
+            "cve": item.get("cve", ""),
+            "status": triage_short,
+            "status_detail": triage_full,
+            "severity": sev_str,
+            "lifecycle": lc_str,
+            "action": action_str,
+        })
+
+    if as_json:
+        payload = {
+            "batch": True,
+            "release": rel_arg,
+            "filter": status_filter or "ALL",
+            "summary": summary,
+            "rows": rows,
+            "results": results,
+            "errors": errors,
+        }
+        print(json.dumps(payload, indent=2))
+        sys.exit(0 if results else 1)
+
+    print(f"{CLR_BOLD}[EXECUTIVE BATCH TRIAGE SUMMARY]{CLR_RESET}  Target: {CLR_CYAN}{rel_arg}{CLR_RESET} | Total: {summary['total']} | Open/Pending: {CLR_WARN}{summary['affected_or_pending']}{CLR_RESET} | Patched: {CLR_CYAN}{summary['patched']}{CLR_RESET} | Not Affected: {summary['not_affected']} | CISA KEV: {CLR_MAG if summary['cisa_kev'] else ''}{summary['cisa_kev']}{CLR_RESET}\n")
+
+    w_cve = max([len("CVE")] + [len(r["cve"]) for r in rows])
+    w_st = max([len("STATUS")] + [len(r["status"]) for r in rows])
+    w_sev = max([len("SEVERITY")] + [len(r["severity"]) for r in rows])
+    w_lc = max([len("LIFECYCLE")] + [len(r["lifecycle"]) for r in rows])
+
+    header = f"  {'CVE':<{w_cve}}  {'STATUS':<{w_st}}  {'SEVERITY':<{w_sev}}  {'LIFECYCLE':<{w_lc}}  PATCHES / ACTION"
+    print(f"{CLR_BOLD}{header}{CLR_RESET}")
+    print("  " + "-" * (len(header) - 2))
+    for r in rows:
+        st_up = r["status"].upper()
+        st_col = CLR_CYAN if ("NOT AFFECTED" in st_up or st_up.startswith("PATCHED") or st_up.startswith("RELEASED")) else CLR_WARN
+        print(f"  {r['cve']:<{w_cve}}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['severity']:<{w_sev}}  {r['lifecycle']:<{w_lc}}  {r['action']}")
+
+    if errors:
+        print(f"\n{CLR_MAG}[BATCH ERRORS]{CLR_RESET}")
+        for e in errors:
+            print(f"  - {e['cve']}: {e['error']}")
+
+    print("")
+    sys.exit(0 if results else 1)
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] in ("--update", "--reindex"):
         build_index()
@@ -2005,11 +2198,37 @@ if __name__ == "__main__":
     if config_mode and not (with_mitigation or with_remediation):
         with_remediation = True
 
-    if len(raw_args) >= 1 and re.match(r'^CVE-\d{4}-\d+$', raw_args[0], re.IGNORECASE):
+    batch_file = None
+    filtered_args = []
+    i = 0
+    while i < len(raw_args):
+        tok = raw_args[i]
+        if tok in ("--file", "-f"):
+            if i + 1 >= len(raw_args):
+                print("Error: --file requires a path (or '-' for stdin).", file=sys.stderr)
+                sys.exit(1)
+            batch_file = raw_args[i + 1]
+            i += 2
+            continue
+        if tok.startswith("--file="):
+            batch_file = tok.split("=", 1)[1]
+            i += 1
+            continue
+        filtered_args.append(tok)
+        i += 1
+    raw_args = filtered_args
+
+    if len(raw_args) >= 1 and re.match(r'^(CVE-)?\d{4}-\d+([,;].*)?$', raw_args[0], re.IGNORECASE):
         raw_args.insert(0, "all")
-    if len(raw_args) < 2:
-        print("Usage   : suse-cve <release> <cve> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]")
+    elif batch_file is not None and len(raw_args) == 0:
+        raw_args.insert(0, "all")
+
+    if (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--json]")
+        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--json]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
+        print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
+        print("          suse-cve 15sp7 --file cves.txt --json")
         print("          suse-cve 15sp7 CVE-2026-98432 --remediate   (Vendor patch remediation + fallback workarounds)")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate    (Compensating workarounds / hardening)")
         print("          suse-cve 15sp7 CVE-2026-98432 --remediate --salt-config   (SaltStack patch state)")
@@ -2028,5 +2247,27 @@ if __name__ == "__main__":
 
     with_mitigation = True
 
-    filter_arg = raw_args[2] if len(raw_args) > 2 else None
-    query(raw_args[0], raw_args[1], filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+    known_filters = {"rel", "released", "qa", "inqa", "aff", "affected", "inp", "inprogress", "wont", "wontfix", "all"}
+    cve_tokens = []
+    filter_arg = None
+
+    if batch_file is not None:
+        for extra in raw_args[1:]:
+            if extra.lower() in known_filters and filter_arg is None:
+                filter_arg = extra
+            else:
+                cve_tokens.append(extra)
+        batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+    else:
+        first_cve_tok = raw_args[1]
+        extra_tokens = raw_args[2:]
+        extra_cves = [t for t in extra_tokens if t.lower() not in known_filters]
+        for t in extra_tokens:
+            if t.lower() in known_filters and filter_arg is None:
+                filter_arg = t
+        if "," in first_cve_tok or ";" in first_cve_tok or extra_cves:
+            batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
+            run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+        else:
+            query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
