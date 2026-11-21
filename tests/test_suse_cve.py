@@ -264,4 +264,25 @@ check(
     "Single-CVE --md alias produces clean compliant report without false action items for NOT AFFECTED",
 )
 
-print("\nALL 11 TEST SUITES (INCLUDING CSV & MARKDOWN REPORTING) PASSED.")
+print("\n=== 12. MULTI-PACKAGE SOURCE ISOLATION & LIFECYCLE AGGREGATION ===")
+rc_mp, out_mp, _ = run_cli("15sp6", "CVE-2026-0394", "--json")
+data_mp = json.loads(out_mp)
+meta_mp = data_mp.get("meta", {})
+aff_15sp6 = data_mp.get("results", {}).get("AFFECTED", {}).get("SUSE Linux Enterprise Server 15 SP6", [])
+na_15sp6 = data_mp.get("results", {}).get("NOT AFFECTED", {}).get("SUSE Linux Enterprise Server 15 SP6", [])
+check(
+    rc_mp == 0
+    and "SLES 15 SP7" in meta_mp.get("affected_sles_releases", [])
+    and "SLES 15 SP6" in meta_mp.get("affected_sles_releases", [])
+    and "SLES 15 SP7" not in meta_mp.get("not_affected_releases", [])
+    and "SLES 15 SP1-SP5" not in meta_mp.get("not_affected_releases", []),
+    "Multi-package CVE classifies affected SLES 15 SP1..SP7 accurately without false NOT AFFECTED masking",
+)
+check(
+    "dovecot23" in aff_15sp6
+    and "dovecot" not in aff_15sp6
+    and "dovecot" in na_15sp6,
+    "Separates unaffected source package (dovecot) from affected binary package (dovecot23) in [AFFECTED] vs [NOT AFFECTED]",
+)
+
+print("\nALL 12 TEST SUITES PASSED.")
