@@ -2369,6 +2369,29 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
     print(f"  {CLR_DIM}• IN QA / UNPATCHED : No full target patch released yet — apply --mitigate workarounds & check service exposure.{CLR_RESET}")
     print(f"  {CLR_DIM}• NOT AFFECTED      : Target release is not vulnerable — no action required.{CLR_RESET}")
 
+    if view_mode in ("remediate", "mitigate") and filtered_results:
+        mode_banner = "REMEDIATION (VENDOR PATCHES)" if view_mode == "remediate" else "MITIGATIONS (COMPENSATING WORKAROUNDS)"
+        print(f"\n{CLR_BOLD}{'=' * 79}{CLR_RESET}")
+        print(f"{CLR_BOLD}[BATCH {mode_banner}]{CLR_RESET}")
+        print(f"{CLR_BOLD}{'=' * 79}{CLR_RESET}")
+        rendered_any = False
+        for item in filtered_results:
+            meta = item.get("meta", {})
+            triage_full = meta.get("triage_status", "UNKNOWN")
+            triage_short = triage_full.split("(", 1)[0].strip() if "(" in triage_full else triage_full
+            if "NOT AFFECTED" in triage_short.upper():
+                continue
+            mit_block = item.get("mitigation")
+            if not mit_block:
+                continue
+            rendered_any = True
+            cve_id = item.get("cve", "")
+            st_col = CLR_CYAN if (triage_short.upper().startswith("PATCHED") or triage_short.upper().startswith("RELEASED")) else CLR_WARN
+            print(f"\n{CLR_BOLD}>>> {cve_id} | {rel_arg.upper()} | {st_col}{triage_short}{CLR_RESET}{CLR_BOLD} <<<{CLR_RESET}")
+            print_mitigation_block(mit_block, view_mode=view_mode)
+        if not rendered_any:
+            print(f"  {CLR_DIM}All scanned CVEs are NOT AFFECTED on {rel_arg} — no {view_mode} actions required.{CLR_RESET}")
+
     print("")
     sys.exit(0 if results else 1)
 

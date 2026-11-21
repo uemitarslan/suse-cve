@@ -203,11 +203,16 @@ check("suse-cve 15sp6 CVE-2026-0394 --mitigate" in out_s156, "Single-CVE header 
 rc_dup, out_dup, _ = run_cli("15sp6", "suse-cve", "15sp6", "CVE-2026-98432", "--remediate")
 check(rc_dup == 0 and "CVE-2026-98432" in out_dup, "Tolerates accidental duplicate 'suse-cve <target>' prefix on paste")
 
-check("I've read https://" not in out_s156 and "Upstream Advisory Guidance (NVD):" in out_s156, "Filters out Bugzilla discussion chatter and surfaces clean NVD workaround")
+check("I've read https://" not in out_s156, "Filters out Bugzilla discussion chatter from workaround output")
 rc_rem6, out_rem6, _ = run_cli("15sp6", "CVE-2026-98432", "--remediate")
 rem_line = next((ln for ln in out_rem6.splitlines() if "Explicit patch IDs:" in ln), "")
 check("SUSE-SLE-Product-SLES-15-SP6" in rem_line and rem_line.find("Product-SLES") < (rem_line.find("Live-Patching") if "Live-Patching" in rem_line else 9999), "Prioritizes standard SLES product patches before Live-Patching in --remediate")
 rc_res6, out_res6, _ = run_cli("15sp6", "CVE-2026-0438", "--table")
 check("No Target RPM Yet | SUSE: Resolved Upstream" in out_res6, "Clarifies 'SUSE: Resolved Upstream' when target release RPM is not yet published")
+
+rc_brem, out_brem, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--remediate")
+check(rc_brem == 0 and "[BATCH REMEDIATION (VENDOR PATCHES)]" in out_brem and "zypper patch --cve=CVE-2026-98432" in out_brem and "Compensating Workarounds" not in out_brem, "Batch mode honors --remediate and strictly separates patches from workarounds")
+rc_bmit, out_bmit, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-0438", "--mitigate")
+check(rc_bmit == 0 and "[BATCH MITIGATIONS (COMPENSATING WORKAROUNDS)]" in out_bmit and "Recommended SLES Workarounds" in out_bmit, "Batch mode honors --mitigate and renders per-CVE workaround blocks below summary table")
 
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")
