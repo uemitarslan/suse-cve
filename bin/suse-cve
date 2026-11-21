@@ -1469,7 +1469,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         "meta": meta_payload,
         "patches": sorted_patches,
         "mitigation": mitigation_data or {},
-    })
+    }, rel_arg=rel_arg)
     w_cve = max(len("CVE"), len(r_single["cve"]))
     w_st = max(len("STATUS"), len(r_single["status"]))
     w_sev = max(len("SEVERITY"), len(r_single["severity"]))
@@ -2419,6 +2419,12 @@ if __name__ == "__main__":
     known_filters = {"rel", "released", "qa", "inqa", "aff", "affected", "inp", "inprogress", "wont", "wontfix", "all"}
     cve_tokens = []
     filter_arg = None
+
+    if len(raw_args) >= 3 and os.path.basename(raw_args[1]) == "suse-cve":
+        if len(raw_args) >= 4 and re.match(r"^(all|sles|sled|sl-?micro|micro|leap|tumbleweed|\d+)", raw_args[2], re.I):
+            raw_args = [raw_args[0]] + raw_args[3:]
+        else:
+            raw_args = [raw_args[0]] + raw_args[2:]
 
     if batch_file is not None:
         for extra in raw_args[1:]:

@@ -198,4 +198,9 @@ check("suse-cve 12sp5 CVE-2026-0394 --mitigate (No Patch | SUSE:" in out_p12 and
 
 check("[STATUS GUIDE — RISK & NEXT STEPS]" in out_p12 and "PARTIALLY PATCHED :" in out_p12, "Batch output includes management-friendly status guide explaining risk and next steps")
 
+rc_s156, out_s156, _ = run_cli("15sp6", "CVE-2026-0394")
+check("suse-cve 15sp6 CVE-2026-0394 --mitigate" in out_s156, "Single-CVE header table uses exact target release in --mitigate command")
+rc_dup, out_dup, _ = run_cli("15sp6", "suse-cve", "15sp6", "CVE-2026-98432", "--remediate")
+check(rc_dup == 0 and "CVE-2026-98432" in out_dup, "Tolerates accidental duplicate 'suse-cve <target>' prefix on paste")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")
