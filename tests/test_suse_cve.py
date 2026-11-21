@@ -187,4 +187,6 @@ check(rc_p12 == 0 and "suse-cve 12sp5 CVE-2026-0394 --mitigate" in out_p12 and "
 
 check("No Patch (SUSE:" in out_p12 and "Patch Pending" not in out_p12, "Action column clearly states 'No Patch (SUSE: <state> — see --mitigate)' when target patch is absent")
 
+check("[STATUS GUIDE — RISK & NEXT STEPS]" in out_p12 and "PARTIALLY PATCHED :" in out_p12, "Batch output includes management-friendly status guide explaining risk and next steps")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")
