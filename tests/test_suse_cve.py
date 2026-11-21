@@ -218,7 +218,7 @@ check(rc_bmit == 0 and "[BATCH MITIGATIONS (COMPENSATING WORKAROUNDS)]" in out_b
 
 print("\n=== 10. BATCH IAC GENERATION (--ANSIBLE-CONFIG & --SALT-CONFIG) ===")
 rc_bans, out_bans, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--ansible-config")
-check(rc_bans == 0 and "---" in out_bans and "zypper --non-interactive patch --cve=CVE-2026-98432" in out_bans and "ansible.posix.sysctl:" in out_bans and "ansible.builtin.reboot:" in out_bans, "Batch --ansible-config generates unified multi-CVE playbook combining zypper patch, sysctl workarounds, and single reboot")
+check(rc_bans == 0 and "---" in out_bans and "\n    - name: Refresh zypper" in out_bans and "\n    - name: [CVE-2026-0438]" in out_bans and "zypper --non-interactive patch --cve=CVE-2026-98432" in out_bans and "ansible.posix.sysctl:" in out_bans and "ansible.builtin.reboot:" in out_bans, "Batch --ansible-config generates valid 4-space indented YAML playbook combining zypper patch, sysctl workarounds, and single reboot")
 rc_bsalt, out_bsalt, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--salt-config")
 check(rc_bsalt == 0 and "cve_batch_zypper_patch:" in out_bsalt and "sysctl.present:" in out_bsalt and "cve_batch_reboot_notice:" in out_bsalt, "Batch --salt-config generates unified multi-CVE Salt state with deduplicated patch & sysctl blocks")
 rc_bmit_ans, out_bmit_ans, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-98432", "--ansible-config", "--mitigate")

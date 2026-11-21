@@ -2005,6 +2005,7 @@ def render_batch_salt_config(rel_arg: str, batch_items: list, force_workaround: 
     emitted_tomcat = False
     has_systemd_reload = False
     has_java_restart = False
+    seen_sysctls = set()
 
     for cve, mit in workaround_items:
         safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
@@ -2074,6 +2075,9 @@ def render_batch_salt_config(rel_arg: str, batch_items: list, force_workaround: 
                 kv_tokens = [tok for tok in cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip().split() if "=" in tok]
                 for idx_kv, kv in enumerate(kv_tokens, 1):
                     k_name, k_val = [x.strip() for x in kv.split("=", 1)]
+                    if (k_name, k_val) in seen_sysctls:
+                        continue
+                    seen_sysctls.add((k_name, k_val))
                     lines.extend([
                         f"{sid}_sysctl_{idx_kv}:",
                         "  sysctl.present:",
@@ -2238,6 +2242,7 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
     emitted_tomcat = False
     has_systemd_reload = False
     has_java_restart = False
+    seen_sysctls = set()
 
     for cve, mit in workaround_items:
         sugs = mit.get("suggestions") or []
@@ -2311,6 +2316,9 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
                 kv_tokens = [tok for tok in cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip().split() if "=" in tok]
                 for kv in kv_tokens:
                     k_name, k_val = [x.strip() for x in kv.split("=", 1)]
+                    if (k_name, k_val) in seen_sysctls:
+                        continue
+                    seen_sysctls.add((k_name, k_val))
                     lines.extend([
                         f"    - name: [{cve}] Apply sysctl kernel mitigation ({k_name}={k_val})",
                         "      ansible.posix.sysctl:",
@@ -2368,7 +2376,6 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
             ])
 
     return "\n".join(lines)
-
 
 def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     print(f"{CLR_MAG}[MITIGATION & MULTI-SOURCE ADVISORY INTEL]{CLR_RESET}")
