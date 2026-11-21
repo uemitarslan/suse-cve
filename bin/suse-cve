@@ -199,6 +199,7 @@ def fetch_web_data(cve_id: str, platform_regex):
     web_last_modified_str = "N/A"
     web_dt = None
     web_all_prods_for_major = set()
+    web_all_active_prods = set()
 
     try:
         proc = subprocess.run(
@@ -262,6 +263,7 @@ def fetch_web_data(cve_id: str, platform_regex):
                 pkgs = extract_pkgs_from_cell(tds[1])
                 for prod in prods:
                     web_all_prods_for_major.add(prod)
+                    web_all_active_prods.add(prod)
                     if platform_regex.search(prod) and pkgs:
                         web_map.setdefault("IN QA", {}).setdefault(prod, set()).update(pkgs)
 
@@ -281,6 +283,7 @@ def fetch_web_data(cve_id: str, platform_regex):
             patches = extract_patchnames_from_cell(tds[2])
             for prod in prods:
                 web_all_prods_for_major.add(prod)
+                web_all_active_prods.add(prod)
                 if platform_regex.search(prod):
                     if pkgs:
                         web_map.setdefault("RELEASED", {}).setdefault(prod, set()).update(pkgs)
@@ -309,6 +312,8 @@ def fetch_web_data(cve_id: str, platform_regex):
                 pkgs = {"(not affected)"}
             for prod in prods:
                 web_all_prods_for_major.add(prod)
+                if found_status != "NOT AFFECTED":
+                    web_all_active_prods.add(prod)
                 if pkgs and (platform_regex.search(prod) or found_status == "NOT AFFECTED"):
                     web_map.setdefault(found_status, {}).setdefault(prod, set()).update(pkgs)
 
@@ -326,6 +331,7 @@ def fetch_web_data(cve_id: str, platform_regex):
     if m_v4:
         v4_vec = re.sub(r"(?:/[A-Z]+:X)+$", "", m_v4.group(2).strip()); suse_intel["cvss4"] = f"{m_v4.group(1).strip()} ({v4_vec})"
     web_map["_SUSE_INTEL"] = suse_intel
+    web_map["_ALL_ACTIVE_PRODS"] = web_all_active_prods
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
 
@@ -963,25 +969,28 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         return f"SLES {maj}"
 
     # 1. Check local SQLite OVAL database across all majors (12, 15, 16)
-    not_aff_prods_pre = set(web_map.get("NOT AFFECTED", {}).keys())
-    not_aff_tags_pre = {extract_sles_tag(p) for p in not_aff_prods_pre if extract_sles_tag(p)}
+    all_active_prods = set(web_map.get("_ALL_ACTIVE_PRODS", set()))
+    for st_act in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
+        all_active_prods.update(web_map.get(st_act, {}).keys())
+    strictly_na_prods = set(web_map.get("NOT AFFECTED", {}).keys()) - all_active_prods
+    active_tags = {extract_sles_tag(p) for p in all_active_prods if extract_sles_tag(p)}
+    strictly_na_tags = {extract_sles_tag(p) for p in strictly_na_prods if extract_sles_tag(p)} - active_tags
 
     if os.path.exists(DB_PATH):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT platform FROM cve_catalog WHERE cve=?", (cve,))
         for (plat,) in cur.fetchall():
-            if plat in not_aff_prods_pre:
+            if plat in strictly_na_prods:
                 continue
             tag = extract_sles_tag(plat)
-            if tag and tag not in not_aff_tags_pre:
+            if tag and tag not in strictly_na_tags:
                 releases.add(tag)
         conn.close()
 
-    # 2. Merge live web products (excluding NOT AFFECTED)
-    not_aff_prods = set(web_map.get("NOT AFFECTED", {}).keys())
-    for prod in web_all_prods:
-        if prod in not_aff_prods:
+    # 2. Merge live web products (excluding strictly NOT AFFECTED)
+    for prod in (web_all_prods | all_active_prods):
+        if prod in strictly_na_prods:
             continue
         tag = extract_sles_tag(prod)
         if tag:
@@ -1074,6 +1083,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     if web_ok:
         for st, p_dict in web_map.items():
+            if st.startswith("_") or not isinstance(p_dict, dict):
+                continue
             for prod, pkgs in p_dict.items():
                 filtered_pkgs = filter_packages_for_platform(prod, pkgs)
                 if filtered_pkgs:
@@ -1108,9 +1119,12 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     rel_dict = raw_status_map.get("RELEASED", {})
     qa_dict = raw_status_map.get("IN QA", {})
 
+    web_not_affected = web_map.get("NOT AFFECTED", {}) if web_ok else {}
     if "AFFECTED" in raw_status_map:
         for p in list(raw_status_map["AFFECTED"].keys()):
             explicit_web_aff = web_affected.get(p, set())
+            if p in web_not_affected:
+                raw_status_map["AFFECTED"][p] -= (web_not_affected[p] - explicit_web_aff)
             if p in rel_dict:
                 raw_status_map["AFFECTED"][p] -= (rel_dict[p] - explicit_web_aff)
             if p in qa_dict:
