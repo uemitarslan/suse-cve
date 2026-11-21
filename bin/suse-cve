@@ -2375,10 +2375,8 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
                 ""
             ])
 
-    lines = [(chr(32)*4 + ln if idx > 12 and ln.startswith("- name:") else ln) for idx, ln in enumerate(lines)]
-    lines = [(chr(32)*4 + ln if idx > 12 and ln.startswith("- name:") else ln) for idx, ln in enumerate(lines)]
+    lines = [(" " * 4 + ln if ln.startswith("- name:") and not ln.startswith("- name: Batch remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
     return "\n".join(lines)
-
 def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     print(f"{CLR_MAG}[MITIGATION & MULTI-SOURCE ADVISORY INTEL]{CLR_RESET}")
 
