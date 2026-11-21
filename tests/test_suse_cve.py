@@ -221,7 +221,47 @@ rc_bans, out_bans, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98
 check(rc_bans == 0 and "---" in out_bans and "\n    - name: Refresh zypper" in out_bans and "\n    - name: [CVE-2026-0438]" in out_bans and "zypper --non-interactive patch --cve=CVE-2026-98432" in out_bans and "ansible.posix.sysctl:" in out_bans and "ansible.builtin.reboot:" in out_bans, "Batch --ansible-config generates valid 4-space indented YAML playbook combining zypper patch, sysctl workarounds, and single reboot")
 rc_bsalt, out_bsalt, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--salt-config")
 check(rc_bsalt == 0 and "cve_batch_zypper_patch:" in out_bsalt and "sysctl.present:" in out_bsalt and "cve_batch_reboot_notice:" in out_bsalt, "Batch --salt-config generates unified multi-CVE Salt state with deduplicated patch & sysctl blocks")
-rc_bmit_ans, out_bmit_ans, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-98432", "--ansible-config", "--mitigate")
+rc_bmit_ans, out_bmit_ans, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--ansible-config", "--mitigate")
 check(rc_bmit_ans == 0 and "zypper --non-interactive patch" not in out_bmit_ans and "ansible.posix.sysctl:" in out_bmit_ans, "Batch --ansible-config --mitigate forces compensating workarounds instead of zypper patch")
 
 print("\nALL 10 TEST SUITES (INCLUDING BATCH IAC GENERATOR) PASSED.")
+
+print("\n=== 11. CSV & MARKDOWN MANAGEMENT REPORTING (--CSV & --MARKDOWN) ===")
+rc_csv, out_csv, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--csv")
+import csv as _csv, io as _io
+csv_rows = list(_csv.reader(_io.StringIO(out_csv)))
+check(
+    rc_csv == 0
+    and len(csv_rows) == 4
+    and csv_rows[0] == ["CVE", "Target_Release", "Status", "Status_Detail", "Severity", "CVSS_Max", "CISA_KEV", "Lifecycle", "Recommended_Action", "CLI_Next_Step"]
+    and csv_rows[1][0] == "CVE-2026-0394"
+    and csv_rows[1][5] == "5.3"
+    and csv_rows[3][0] == "CVE-2026-98432"
+    and csv_rows[3][5] in ("9.8", "N/A")
+    and "SUSE-SLE-" in csv_rows[3][8],
+    "Batch --csv emits valid RFC-4180 CSV with CVSS scores, lifecycle, and actionable CLI next steps",
+)
+
+rc_md, out_md, _ = run_cli("15sp6", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--markdown")
+check(
+    rc_md == 0
+    and "# SUSE Security Vulnerability Triage Report (`15sp6`)" in out_md
+    and "## Executive Summary" in out_md
+    and "## Vulnerability Triage Matrix" in out_md
+    and "| `CVE-2026-98432` | PARTIALLY PATCHED |" in out_md
+    and "| 5.3 |" in out_md
+    and r"No Target RPM Yet \| SUSE:" in out_md
+    and "## Action Required — Open / Unpatched CVEs (3)" in out_md
+    and "## Audit & Compliance Status Guide" in out_md,
+    "Batch --markdown generates executive audit report with KPI summary, pipe-escaped table, and action commands",
+)
+
+rc_md_single, out_md_single, _ = run_cli("12sp5", "CVE-2026-97876", "--md")
+check(
+    rc_md_single == 0
+    and "| `CVE-2026-97876` | NOT AFFECTED / NO OPEN VULNERABILITY |" in out_md_single
+    and "## Action Required" not in out_md_single,
+    "Single-CVE --md alias produces clean compliant report without false action items for NOT AFFECTED",
+)
+
+print("\nALL 11 TEST SUITES (INCLUDING CSV & MARKDOWN REPORTING) PASSED.")
