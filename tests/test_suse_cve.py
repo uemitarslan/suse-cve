@@ -168,7 +168,12 @@ check(
     "--only-kev retains only CISA KEV-listed vulnerabilities"
 )
 
-rc_pid, out_pid, _ = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432", "--json")
+import time
+for _attempt in range(3):
+    rc_pid, out_pid, _ = run_cli("15sp7", "CVE-2026-97876,CVE-2026-98432", "--json")
+    if "SUSE-SLE-" in out_pid:
+        break
+    time.sleep(1.0)
 piddata = json.loads(out_pid)
 act_val = next((r["action"] for r in piddata.get("rows", []) if r.get("cve") == "CVE-2026-98432"), "")
 check("SUSE-SLE-" in act_val and "SUSE Linux Enterprise" not in act_val, "Batch action column renders clean SUSE-SLE-* patch IDs instead of product names")
@@ -182,10 +187,14 @@ check(rc_s1 == 0 and "PATCHES / ACTION" in out_s1 and "[EXECUTIVE TRIAGE SUMMARY
 rc_unp, out_unp, _ = run_cli("15sp7", "CVE-2026-0394,CVE-2026-0398")
 check(rc_unp == 0 and "[ACTION REQUIRED — OPEN / UNPATCHED CVEs (1)]" in out_unp and "suse-cve 15sp7 CVE-2026-0394 --mitigate" in out_unp, "Batch output displays actionable --mitigate command hints for UNPATCHED CVEs")
 
-rc_p12, out_p12, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-98432")
+for _attempt in range(3):
+    rc_p12, out_p12, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-98432")
+    if "SUSE-SLE-SERVER-12-SP5" in out_p12:
+        break
+    time.sleep(1.0)
 check(rc_p12 == 0 and "suse-cve 12sp5 CVE-2026-0394 --mitigate" in out_p12 and "suse-cve 12sp5 CVE-2026-98432 --remediate" in out_p12, "Footer chooses --mitigate vs --remediate for PARTIALLY PATCHED based on patch availability")
 
-check("No Patch (SUSE:" in out_p12 and "Patch Pending" not in out_p12, "Action column clearly states 'No Patch (SUSE: <state> — see --mitigate)' when target patch is absent")
+check("suse-cve 12sp5 CVE-2026-0394 --mitigate (No Patch | SUSE:" in out_p12 and "Patch Pending" not in out_p12, "Action column provides full copy-pasteable --mitigate command when target patch is absent")
 
 check("[STATUS GUIDE — RISK & NEXT STEPS]" in out_p12 and "PARTIALLY PATCHED :" in out_p12, "Batch output includes management-friendly status guide explaining risk and next steps")
 

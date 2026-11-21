@@ -2077,7 +2077,7 @@ def extract_batch_cves(cve_tokens, file_path=None):
     return cves
 
 
-def format_triage_row(item):
+def format_triage_row(item, rel_arg=None):
     """Build normalized summary table row dict from a single-CVE JSON payload."""
     meta = item.get("meta", {})
     mit = item.get("mitigation", {}) or {}
@@ -2135,7 +2135,9 @@ def format_triage_row(item):
         action_str = "Patched (Vendor Release)"
     else:
         suse_state = suse_intel.get("state") or "Pending"
-        action_str = f"No Patch (SUSE: {suse_state} — see --mitigate)"
+        target_tok = rel_arg or meta.get("target") or meta.get("release") or "all"
+        cve_tok = item.get("cve", "")
+        action_str = f"suse-cve {target_tok} {cve_tok} --mitigate (No Patch | SUSE: {suse_state})"
 
     return {
         "cve": item.get("cve", ""),
@@ -2220,7 +2222,7 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
 
     rows = []
     for item in results:
-        row_info = format_triage_row(item)
+        row_info = format_triage_row(item, rel_arg=rel_arg)
         triage_upper = row_info["triage_upper"]
         is_kev = row_info["is_kev"]
 
@@ -2293,7 +2295,7 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         print("  Review compensating mitigations & remediation steps for open vulnerabilities:")
         for ur in open_action_rows:
             st_u = ur["status"].upper()
-            flag = "--remediate" if ("PARTIALLY" in st_u and not ur["action"].startswith(("No Patch", "Patch "))) else "--mitigate"
+            flag = "--remediate" if ("PARTIALLY" in st_u and not ur["action"].startswith(("suse-cve ", "No Patch", "Patch "))) else "--mitigate"
             print(f"  -> {CLR_BOLD}suse-cve {rel_arg} {ur['cve']} {flag}{CLR_RESET}  [{ur['status']} | {ur['severity']}]")
 
     if errors:
@@ -2433,8 +2435,12 @@ if __name__ == "__main__":
         for t in extra_tokens:
             if t.lower() in known_filters and filter_arg is None:
                 filter_arg = t
-        if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or only_open or only_kev:
-            batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-            run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
-        else:
-            query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+        try:
+            if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or only_open or only_kev:
+                batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
+                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
+            else:
+                query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            os._exit(0)
