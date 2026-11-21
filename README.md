@@ -46,8 +46,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json]
-suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json | --csv | --markdown]
 suse-cve --sync
 ```
 

@@ -3047,7 +3047,7 @@ if __name__ == "__main__":
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
         print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json | --csv | --markdown]")
-        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json]")
+        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
         print("          suse-cve 15sp7 --file cves.txt --json                 (Batch triage from file with JSON)")
