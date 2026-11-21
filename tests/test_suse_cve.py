@@ -182,4 +182,7 @@ check(rc_s1 == 0 and "PATCHES / ACTION" in out_s1 and "[EXECUTIVE TRIAGE SUMMARY
 rc_unp, out_unp, _ = run_cli("15sp7", "CVE-2026-0394,CVE-2026-0398")
 check(rc_unp == 0 and "[ACTION REQUIRED — OPEN / UNPATCHED CVEs (1)]" in out_unp and "suse-cve 15sp7 CVE-2026-0394 --mitigate" in out_unp, "Batch output displays actionable --mitigate command hints for UNPATCHED CVEs")
 
+rc_p12, out_p12, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-98432")
+check(rc_p12 == 0 and "suse-cve 12sp5 CVE-2026-0394 --mitigate" in out_p12 and "suse-cve 12sp5 CVE-2026-98432 --remediate" in out_p12, "Footer chooses --mitigate vs --remediate for PARTIALLY PATCHED based on patch availability")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")

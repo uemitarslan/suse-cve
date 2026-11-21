@@ -2293,7 +2293,7 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         print("  Review compensating mitigations & remediation steps for open vulnerabilities:")
         for ur in open_action_rows:
             st_u = ur["status"].upper()
-            flag = "--remediate" if "PARTIALLY" in st_u else "--mitigate"
+            flag = "--remediate" if ("PARTIALLY" in st_u and not ur["action"].startswith("Patch ")) else "--mitigate"
             print(f"  -> {CLR_BOLD}suse-cve {rel_arg} {ur['cve']} {flag}{CLR_RESET}  [{ur['status']} | {ur['severity']}]")
 
     if errors:
