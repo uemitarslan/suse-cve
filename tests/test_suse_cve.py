@@ -185,4 +185,6 @@ check(rc_unp == 0 and "[ACTION REQUIRED — OPEN / UNPATCHED CVEs (1)]" in out_u
 rc_p12, out_p12, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-98432")
 check(rc_p12 == 0 and "suse-cve 12sp5 CVE-2026-0394 --mitigate" in out_p12 and "suse-cve 12sp5 CVE-2026-98432 --remediate" in out_p12, "Footer chooses --mitigate vs --remediate for PARTIALLY PATCHED based on patch availability")
 
+check("No Patch (SUSE:" in out_p12 and "Patch Pending" not in out_p12, "Action column clearly states 'No Patch (SUSE: <state> — see --mitigate)' when target patch is absent")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")
