@@ -23,6 +23,9 @@
 5. **Idempotent IaC Generation (`--salt-config` & `--ansible-config`):**
    - Generates ready-to-test **SaltStack `.sls` states** and **Ansible playbooks** for patching or mitigations.
    - Emits valid, idempotent no-op states (`test.succeed_without_changes` in SaltStack, `ansible.builtin.debug` in Ansible) when a target release is `NOT AFFECTED`, ensuring fleet-wide automation runs never abort on unaffected hosts.
+6. **Exportable Management & Audit Reporting (`--csv` & `--markdown` / `--md`):**
+  - Exports **RFC-4180 compliant CSV** (`--csv`) with CVSS scores, CISA KEV flags, lifecycle status, recommended actions, and copy-pasteable `CLI_Next_Step` remediation commands.
+  - Generates executive **Markdown audit reports** (`--markdown` / `--md`) featuring UTC timestamps, KPI summary tables, pipe-escaped triage matrices, prioritized action lists, and compliance status guides.
 
 ---
 
@@ -55,7 +58,7 @@ suse-cve --sync
 
 | Parameter | Required | Description | Examples |
 |---|---|---|---|
-| `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, 15sp7`, 16.0`, `micro6.1`, `all` |
+| `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, `15sp7`, `16.0`, `micro6.1`, `all` |
 | `<cve[,cve2,...]>` | Yes* | Single CVE or comma-separated CVE list (case-insensitive, deduplicated) | `CVE-2026-98432`, `CVE-2026-97876,CVE-2026-98432` |
 | `--file`, `-f` | Yes* | Read CVE IDs from file or `-` for `stdin` (`#` comments & blank lines ignored) | `--file cves.txt`, `-f -` |
 | `[status_filter]` | No | Restrict detail output to a specific patch status | `rel`, `qa`, `aff`, `inp`, `wont` |
@@ -67,6 +70,8 @@ suse-cve --sync
 | `--only-open` | No | In batch mode, show only open/pending CVEs (exclude `PATCHED` & `NOT AFFECTED`) | `--only-open` |
 | `--only-kev` | No | In batch mode, show only CVEs listed in the CISA KEV catalog | `--only-kev` |
 | `--json` | No | Emit structured JSON for CI/CD pipelines and automation | `--json` |
+| `--csv` | No | Export RFC-4180 compliant CSV for Excel, BI tools, and ticketing systems | `--csv` |
+| `--markdown`, `--md` | No | Export executive Markdown audit report with KPI table and action commands | `--markdown`, `--md` |
 | `--sync` | No | Download latest OVAL dumps and rebuild the local SQLite index | `suse-cve --sync` |
 
 ---
@@ -115,11 +120,23 @@ suse-cve 15sp7 --file cves.txt --json | jq '{summary, rows}'
 printf "CVE-2026-97876\nCVE-2026-98432\n" | suse-cve -f -
 ```
 
+### 7. Executive Audit & Compliance Reporting (`--csv` & `--markdown` / `--md`)
+```bash
+# Export RFC-4180 CSV report for spreadsheets or SIEM ingestion
+suse-cve 15sp6 CVE-2026-0394,CVE-2026-0438,CVE-2026-98432 --csv > /tmp/triage_15sp6.csv
+
+# Generate Markdown executive audit report filtered to open vulnerabilities
+suse-cve 15sp6 CVE-2026-0394,CVE-2026-0438,CVE-2026-98432 --only-open --md > /tmp/audit_15sp6.md
+
+# Generate compliance audit evidence for a non-affected target release
+suse-cve 12sp5 CVE-2026-97876 --md
+```
+
 ---
 
 ## Verification & Regression Test Suite
 
-The repository includes an automated end-to-end test suite (`tests/test_suse_cve.py`) verifying input sanitization, lifecycle boundaries (General Support, LTSS, EOL), flag separation, `SIGPIPE` hygiene, SL Micro transactional update handling, air-gapped OVAL fallback, and SaltStack/Ansible YAML validity:
+The repository includes an automated 11-suite end-to-end test suite (`tests/test_suse_cve.py`) verifying input sanitization, lifecycle boundaries (General Support, LTSS, EOL), flag separation, `SIGPIPE` hygiene, SL Micro transactional update handling, air-gapped OVAL fallback, SaltStack/Ansible YAML validity, and CSV/Markdown report formatting:
 
 ```bash
 python3 tests/test_suse_cve.py
