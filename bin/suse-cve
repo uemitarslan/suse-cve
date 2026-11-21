@@ -327,44 +327,94 @@ def fetch_web_data(cve_id: str, platform_regex):
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
 
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+_KEV_LOCK = threading.Lock()
+_KEV_INDEX = None
+
+
+class _ThreadLocalStream:
+    def __init__(self, fallback):
+        self._fallback = fallback
+        self._local = threading.local()
+
+    def set_target(self, stream):
+        self._local.stream = stream
+
+    def clear_target(self):
+        if hasattr(self._local, "stream"):
+            delattr(self._local, "stream")
+
+    def _target(self):
+        return getattr(self._local, "stream", self._fallback)
+
+    def write(self, data):
+        return self._target().write(data)
+
+    def flush(self):
+        return self._target().flush()
+
+    def isatty(self):
+        t = self._target()
+        return t.isatty() if hasattr(t, "isatty") else False
+
+    def __getattr__(self, name):
+        return getattr(self._target(), name)
+
+
 def fetch_cisa_kev(cve_id: str):
-    """Check the public CISA KEV catalog (Public Domain) for active exploitation."""
+    """Check the public CISA KEV catalog (Public Domain) with thread-safe in-memory index cache."""
+    global _KEV_INDEX
     kev_url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
     cache_file = os.path.join(DATA_DIR, "cisa_kev.json")
-    data = None
 
-    try:
-        need_download = True
-        if os.path.exists(cache_file):
-            age_h = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(cache_file)) / 3600.0
-            if age_h < 12:
-                need_download = False
+    with _KEV_LOCK:
+        if _KEV_INDEX is None:
+            data = None
+            try:
+                need_download = True
+                if os.path.exists(cache_file):
+                    age_h = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(cache_file)) / 3600.0
+                    if age_h < 12:
+                        need_download = False
 
-        if need_download:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            subprocess.run(
-                ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-o", cache_file, kev_url],
-                stderr=subprocess.DEVNULL,
-                check=False
-            )
+                if need_download:
+                    os.makedirs(DATA_DIR, exist_ok=True)
+                    tmp_file = f"{cache_file}.tmp.{os.getpid()}"
+                    subprocess.run(
+                        ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-o", tmp_file, kev_url],
+                        stderr=subprocess.DEVNULL,
+                        check=False
+                    )
+                    if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 100:
+                        os.replace(tmp_file, cache_file)
+                    elif os.path.exists(tmp_file):
+                        os.remove(tmp_file)
 
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8", errors="ignore") as f:
-                data = json.load(f)
-    except Exception:
-        return None
+                if os.path.exists(cache_file):
+                    with open(cache_file, "r", encoding="utf-8", errors="ignore") as f:
+                        data = json.load(f)
+            except Exception:
+                return None
 
-    if data:
-        for item in data.get("vulnerabilities", []):
-            if item.get("cveID", "").upper() == cve_id.upper():
-                return {
-                    "exploited": True,
-                    "date_added": item.get("dateAdded", "N/A"),
-                    "due_date": item.get("dueDate", "N/A"),
-                    "ransomware": item.get("knownRansomwareCampaignUse", "Unknown"),
-                    "required_action": item.get("requiredAction", "")
-                }
-    return {"exploited": False}
+            idx = {}
+            if isinstance(data, dict):
+                for item in data.get("vulnerabilities", []):
+                    cid = item.get("cveID", "").upper()
+                    if cid:
+                        idx[cid] = {
+                            "exploited": True,
+                            "vendor": item.get("vendorProject", "N/A"),
+                            "product": item.get("product", "N/A"),
+                            "date_added": item.get("dateAdded", "N/A"),
+                            "due_date": item.get("dueDate", "N/A"),
+                            "ransomware": item.get("knownRansomwareCampaignUse", "Unknown"),
+                            "required_action": item.get("requiredAction", "")
+                        }
+            _KEV_INDEX = idx
+
+    return _KEV_INDEX.get(cve_id.upper(), {"exploited": False})
 
 
 def fetch_redhat_intel(cve_id: str) -> dict:
@@ -2098,36 +2148,61 @@ def format_triage_row(item):
 
 
 def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
-    """Modular batch orchestrator that delegates each CVE to query(..., as_json=True) without altering single-CVE logic."""
+    """Parallel batch orchestrator executing up to 8 concurrent CVE queries while preserving deterministic input order."""
     import io
-    import contextlib
 
-    results = []
-    errors = []
+    orig_out, orig_err = sys.stdout, sys.stderr
+    tl_out = _ThreadLocalStream(orig_out)
+    tl_err = _ThreadLocalStream(orig_err)
+    sys.stdout = tl_out
+    sys.stderr = tl_err
 
-    for cve in cve_list:
+    def _eval_one(cve):
         buf = io.StringIO()
         err_buf = io.StringIO()
+        tl_out.set_target(buf)
+        tl_err.set_target(err_buf)
         try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
-                query(
-                    rel_arg,
-                    cve,
-                    status_filter,
-                    as_json=True,
-                    with_mitigation=with_mitigation,
-                    config_mode=config_mode,
-                    force_workaround=force_workaround,
-                    view_mode=view_mode,
-                )
+            query(
+                rel_arg,
+                cve,
+                status_filter,
+                as_json=True,
+                with_mitigation=with_mitigation,
+                config_mode=config_mode,
+                force_workaround=force_workaround,
+                view_mode=view_mode,
+                allow_prompt=False,
+            )
         except SystemExit as exc:
             if exc.code not in (0, None):
                 err_msg = err_buf.getvalue().strip() or f"Exited with code {exc.code}"
-                errors.append({"cve": cve, "error": err_msg})
-                continue
+                return ("err", {"cve": cve, "error": err_msg})
+        finally:
+            tl_out.clear_target()
+            tl_err.clear_target()
         raw_out = buf.getvalue().strip()
         if raw_out:
-            results.append(json.loads(raw_out))
+            return ("ok", json.loads(raw_out))
+        return ("err", {"cve": cve, "error": "Empty response"})
+
+    results = []
+    errors = []
+    workers = min(6, max(1, len(cve_list)))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            outcomes = list(pool.map(_eval_one, cve_list))
+    finally:
+        sys.stdout = orig_out
+        sys.stderr = orig_err
+
+    for kind, payload in outcomes:
+        if kind == "ok":
+            results.append(payload)
+        else:
+            errors.append(payload)
+
+
 
     summary = {
         "total": len(cve_list),
