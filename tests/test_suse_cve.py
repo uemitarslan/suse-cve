@@ -179,4 +179,7 @@ check(rc_t1 == 0 and "[EXECUTIVE BATCH TRIAGE SUMMARY]" in out_t1 and "PATCHES /
 rc_s1, out_s1, _ = run_cli("15sp7", "CVE-2026-98432")
 check(rc_s1 == 0 and "PATCHES / ACTION" in out_s1 and "[EXECUTIVE TRIAGE SUMMARY]" in out_s1, "Default single-CVE output includes compact 1-row triage header table above details")
 
+rc_unp, out_unp, _ = run_cli("15sp7", "CVE-2026-0394,CVE-2026-0398")
+check(rc_unp == 0 and "[ACTION REQUIRED — OPEN / UNPATCHED CVEs (1)]" in out_unp and "suse-cve 15sp7 CVE-2026-0394 --mitigate" in out_unp, "Batch output displays actionable --mitigate command hints for UNPATCHED CVEs")
+
 print("\nALL 9 TEST SUITES (INCLUDING MODULAR BATCH SCANNER) PASSED.")

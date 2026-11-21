@@ -2131,6 +2131,8 @@ def format_triage_row(item):
         action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
     elif "NOT AFFECTED" in triage_upper:
         action_str = "None (Not Affected)"
+    elif triage_upper.startswith("PATCHED") or triage_upper.startswith("RELEASED"):
+        action_str = "Patched (Vendor Release)"
     else:
         suse_state = suse_intel.get("state") or "Pending"
         action_str = f"Patch {suse_state} (see --mitigate)"
@@ -2281,6 +2283,18 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, with_m
         st_up = r["status"].upper()
         st_col = CLR_CYAN if ("NOT AFFECTED" in st_up or st_up.startswith("PATCHED") or st_up.startswith("RELEASED")) else CLR_WARN
         print(f"  {r['cve']:<{w_cve}}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['severity']:<{w_sev}}  {r['lifecycle']:<{w_lc}}  {r['action']}")
+
+    open_action_rows = [
+        r for r in rows
+        if not ("NOT AFFECTED" in r["status"].upper() or r["status"].upper().startswith("PATCHED") or r["status"].upper().startswith("RELEASED"))
+    ]
+    if open_action_rows:
+        print(f"\n{CLR_WARN}[ACTION REQUIRED — OPEN / UNPATCHED CVEs ({len(open_action_rows)})]{CLR_RESET}")
+        print("  Review compensating mitigations & remediation steps for open vulnerabilities:")
+        for ur in open_action_rows:
+            st_u = ur["status"].upper()
+            flag = "--remediate" if "PARTIALLY" in st_u else "--mitigate"
+            print(f"  -> {CLR_BOLD}suse-cve {rel_arg} {ur['cve']} {flag}{CLR_RESET}  [{ur['status']} | {ur['severity']}]")
 
     if errors:
         print(f"\n{CLR_MAG}[BATCH ERRORS]{CLR_RESET}")
