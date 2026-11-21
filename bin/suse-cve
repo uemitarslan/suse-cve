@@ -2375,6 +2375,7 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
                 ""
             ])
 
+    lines = [(chr(32)*4 + ln if idx > 12 and ln.startswith("- name:") else ln) for idx, ln in enumerate(lines)]
     return "\n".join(lines)
 
 def print_mitigation_block(mit: dict, view_mode: str = 'all'):
