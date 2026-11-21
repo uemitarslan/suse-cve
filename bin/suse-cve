@@ -505,12 +505,34 @@ def fetch_suse_bugzilla_workarounds(bugzilla_urls: list) -> list:
             for idx, cm in enumerate(comments):
                 if idx == 0:
                     continue  # Skip initial boilerplate bug description
-                txt = cm.get("text", "").strip()
-                if not txt:
+                raw_txt = cm.get("text", "").strip()
+                if not raw_txt:
                     continue
-                if re.search(r'\b(workaround|mitigat\w*|temporary fix|disable\s+\w+|sysctl|blacklist|-XX:)\b', txt, re.IGNORECASE):
-                    clean_txt = re.sub(r'\s+', ' ', txt).strip()
-                    findings.append((bz_id, clean_txt[:420]))
+                # Strip quoted reply lines
+                lines = [ln.strip() for ln in raw_txt.splitlines() if ln.strip() and not ln.strip().startswith(">")]
+                if not lines:
+                    continue
+                # Evaluate paragraph-by-paragraph to avoid capturing surrounding discussion chatter
+                paras = [p.strip() for p in re.split(r'\n\s*\n', "\n".join(lines)) if p.strip()]
+                for para in paras:
+                    clean_txt = re.sub(r'\s+', ' ', para).strip()
+                    # Skip questions, subjective speculation, or bare URLs without actionable instructions
+                    if clean_txt.endswith("?") and re.search(r'\b(is there|any|does|can|will|what|why|how)\b', clean_txt[:60], re.I):
+                        continue
+                    if re.search(r"\b(I've read|to me,? that means|I think|I guess|not sure if|seems like|in my opinion)\b", clean_txt, re.I):
+                        continue
+                    no_urls = re.sub(r'https?://\S+', '', clean_txt).strip()
+                    if len(no_urls) < 35:
+                        continue
+                    # Require both a mitigation keyword AND an actionable directive/config signal
+                    has_kw = re.search(r'\b(workaround|mitigat\w*|temporary fix|disable\s+\w+|sysctl|blacklist|-XX:)\b', no_urls, re.I)
+                    has_action = re.search(r'\b(set|disable|enable|configure|change|restrict|block|remove|avoid|use|add|edit|sysctl|modprobe|systemctl|/etc/|/sys/|-XX:)\b', no_urls, re.I)
+                    if has_kw and has_action:
+                        if len(clean_txt) > 360:
+                            cut = clean_txt[:360]
+                            last_dot = max(cut.rfind(". "), cut.rfind("; "))
+                            clean_txt = cut[:last_dot + 1].strip() if last_dot > 120 else cut.rsplit(" ", 1)[0].strip() + "..."
+                        findings.append((bz_id, clean_txt))
         except Exception:
             continue
     return findings[:3]
@@ -732,6 +754,25 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
                 "title": "Tighten PHP memory_limit and request size caps to prevent attacker-controlled OOM triggers",
                 "cmd": "grep -E '^(memory_limit|post_max_size|max_input_vars)' /etc/php*/*/php.ini  # Lower memory_limit (e.g. 128M) & reload php-fpm/apache2"
             })
+
+        # Extract explicit vendor workaround sentences from NVD description when present
+        if description:
+            nvd_sentences = re.split(r'(?<=[.!?])\s+', re.sub(r'\s+', ' ', description).strip())
+            wa_sents = [
+                s.strip() for s in nvd_sentences
+                if re.search(r'\b(alternatively|workaround|mitigat\w*|ensure that|use different|disable\s+\w+)\b', s, re.I)
+                and not re.search(r'\b(no publicly available exploits|upgrade to fixed version only)\b', s, re.I)
+            ]
+            if wa_sents:
+                nvd_wa_txt = " ".join(wa_sents)
+                if len(nvd_wa_txt) > 360:
+                    cut = nvd_wa_txt[:360]
+                    last_dot = cut.rfind(". ")
+                    nvd_wa_txt = cut[:last_dot + 1].strip() if last_dot > 100 else cut.rsplit(" ", 1)[0].strip() + "..."
+                suggestions.append({
+                    "title": f"Upstream Advisory Guidance (NVD): {nvd_wa_txt}",
+                    "cmd": "# Apply configuration hardening/isolation above to affected service configs until SUSE package update is installed"
+                })
 
         if not suggestions:
             if is_kernel_pkg and any(k in combined_intel for k in ("perf", "pmu")):
@@ -1161,6 +1202,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                         pid = (p_item.get("patch", "") if isinstance(p_item, dict) else str(p_item).split(" (")[0]).strip()
                         if pid and pid not in matched_patch_ids:
                             matched_patch_ids.append(pid)
+            matched_patch_ids.sort(key=rank_suse_patch_id)
             needs_reboot = any(
                 p.startswith(("kernel-", "glibc", "systemd", "xen", "dbus"))
                 for p in target_vuln_pkgs
@@ -2077,6 +2119,20 @@ def extract_batch_cves(cve_tokens, file_path=None):
     return cves
 
 
+def rank_suse_patch_id(pid: str):
+    if "Live-Patching" in pid:
+        tier = 4
+    elif "Development-Tools" in pid or "SLES_SAP" in pid:
+        tier = 3
+    elif "Module-Basesystem" in pid or "Module-Server-Applications" in pid:
+        tier = 2
+    elif "Product-SLES" in pid or "SLE-SERVER" in pid or pid.startswith("SUSE-20"):
+        tier = 1
+    else:
+        tier = 2
+    return (tier, pid)
+
+
 def format_triage_row(item, rel_arg=None):
     """Build normalized summary table row dict from a single-CVE JSON payload."""
     meta = item.get("meta", {})
@@ -2125,7 +2181,7 @@ def format_triage_row(item, rel_arg=None):
         patch_entries.extend(raw_patches)
     patch_ids = sorted(
         {re.sub(r'\s*\([^)]*\)$', '', str(x.get("patch_id") or x.get("id") or x.get("patch") or "" if isinstance(x, dict) else x)).strip() for x in patch_entries if x},
-        key=lambda pid: (1 if "Live-Patching" in pid else 0, pid)
+        key=rank_suse_patch_id
     )
     if patch_ids:
         action_str = ", ".join(patch_ids[:2]) + (f" (+{len(patch_ids)-2})" if len(patch_ids) > 2 else "")
@@ -2137,7 +2193,11 @@ def format_triage_row(item, rel_arg=None):
         suse_state = suse_intel.get("state") or "Pending"
         target_tok = rel_arg or meta.get("target") or meta.get("release") or "all"
         cve_tok = item.get("cve", "")
-        action_str = f"suse-cve {target_tok} {cve_tok} --mitigate (No Patch | SUSE: {suse_state})"
+        if suse_state.strip().lower() == "resolved":
+            state_note = "No Target RPM Yet | SUSE: Resolved Upstream"
+        else:
+            state_note = f"No Patch | SUSE: {suse_state}"
+        action_str = f"suse-cve {target_tok} {cve_tok} --mitigate ({state_note})"
 
     return {
         "cve": item.get("cve", ""),
