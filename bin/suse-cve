@@ -825,7 +825,9 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         for bz_id, bz_txt in bz_workarounds:
             suggestions.insert(0, {
                 "title": f"SUSE Bugzilla #{bz_id} Workaround Note: {bz_txt}",
-                "cmd": f"# Source: https://bugzilla.suse.com/show_bug.cgi?id={bz_id}"
+                "source_attribution": f"SUSE Bugzilla #{bz_id}",
+                "source_urls": [f"https://bugzilla.suse.com/show_bug.cgi?id={bz_id}"],
+                "cmd": f"# Verify upstream bug report and apply only if applicable to your SLES environment"
             })
 
         ub_str = " ".join(str(x) for x in ub_notes) if isinstance(ub_notes, list) else str(ub_notes or "")
@@ -2553,7 +2555,8 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     desc = re.sub(r'\s+', ' ', mit["description"]).strip()
     print(textwrap.fill(f"Summary: {desc}", width=116, initial_indent="  ", subsequent_indent="  ").replace("Summary:", f"{CLR_BOLD}Summary:{CLR_RESET}", 1))
 
-    if mit.get("redhat_mitigation") and "see the security bulletin" not in mit["redhat_mitigation"].lower():
+    has_rh_in_suggestions = any("Red Hat" in (s.get("source_attribution") or "") for s in (mit.get("suggestions") or []))
+    if mit.get("redhat_mitigation") and "see the security bulletin" not in mit["redhat_mitigation"].lower() and not (has_rh_in_suggestions and view_mode != "remediate"):
         print(f"\n  {CLR_BOLD}Red Hat Security Mitigation (CC BY 4.0):{CLR_RESET}")
         print(textwrap.fill(mit["redhat_mitigation"], width=116, initial_indent="  ", subsequent_indent="  "))
 
@@ -2589,16 +2592,20 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
         else:
             w_hdr = "Recommended SLES Workarounds (No patch released yet):"
         print(f"\n  {CLR_BOLD}{w_hdr}{CLR_RESET}")
+        default_verify_urls = [
+            f"https://www.suse.com/security/cve/{(mit.get('cve_id') or mit.get('cve') or '')}.html",
+            f"https://nvd.nist.gov/vuln/detail/{(mit.get('cve_id') or mit.get('cve') or '')}",
+        ]
         for idx, s in enumerate(mit["suggestions"], 1):
             attr = s.get("source_attribution")
             urls = s.get("source_urls") or []
             if "No SLES packages affected" in s.get("title", ""):
                 print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
             else:
-                attr_label = attr or "Multi-Source Security Advisory"
+                attr_label = attr or "SUSE / NVD Security Hardening Guidance"
+                verify_urls = urls if urls else default_verify_urls
                 print(f"  {idx}. {CLR_MAG}[Due to {attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
-            if urls:
-                print(f"     {CLR_DIM}Source / Verify: {' | '.join(urls)}{CLR_RESET}")
+                print(f"     {CLR_DIM}Source / Verify: {' | '.join(verify_urls)}{CLR_RESET}")
             for cln in str(s['cmd']).splitlines():
                 print(f"     {CLR_CYAN}$ {cln}{CLR_RESET}" if cln == str(s['cmd']).splitlines()[0] else f"       {CLR_CYAN}{cln}{CLR_RESET}")
         import textwrap
