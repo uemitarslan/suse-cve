@@ -2590,9 +2590,13 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
             w_hdr = "Recommended SLES Workarounds (No patch released yet):"
         print(f"\n  {CLR_BOLD}{w_hdr}{CLR_RESET}")
         for idx, s in enumerate(mit["suggestions"], 1):
-            attr = s.get("source_attribution") or "Multi-Source Security Advisory"
+            attr = s.get("source_attribution")
             urls = s.get("source_urls") or []
-            print(f"  {idx}. {CLR_MAG}[Due to {attr}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
+            if "No SLES packages affected" in s.get("title", ""):
+                print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
+            else:
+                attr_label = attr or "Multi-Source Security Advisory"
+                print(f"  {idx}. {CLR_MAG}[Due to {attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
             if urls:
                 print(f"     {CLR_DIM}Source / Verify: {' | '.join(urls)}{CLR_RESET}")
             for cln in str(s['cmd']).splitlines():
