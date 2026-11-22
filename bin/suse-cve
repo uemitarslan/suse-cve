@@ -1730,10 +1730,300 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
 
 
+def _emit_salt_suggestion_states(
+    cve: str,
+    sugs: list,
+    lines: list,
+    state: dict,
+    prefix_batch: bool = False,
+) -> int:
+    """Render source-attributed, idempotent SaltStack states for compensating workarounds."""
+    safe_cve = re.sub(r"[^A-Za-z0-9_]", "_", cve.lower())
+    default_urls = [
+        f"https://www.suse.com/security/cve/{cve}.html",
+        f"https://nvd.nist.gov/vuln/detail/{cve}",
+    ]
+    step_idx = 0
+
+    for s in sugs:
+        cmd = s.get("cmd", "").strip()
+        raw_title = s.get("title", "").strip()
+        attr = s.get("source_attribution") or "SUSE / NVD Security Hardening Guidance"
+        urls = s.get("source_urls") or default_urls
+
+        if "No SLES packages affected" in raw_title:
+            lines.append(f"# {raw_title}")
+            continue
+
+        lines.append(f"# [Due to {attr}] {raw_title}")
+        lines.append(f"# Source / Verify: {' | '.join(urls)}")
+
+        if not cmd or cmd.startswith("#") or cmd.startswith("true"):
+            lines.append("# Action: Manual review required (no automated command)")
+            lines.append("")
+            continue
+
+        step_idx += 1
+        sid = f"{safe_cve}_step_{step_idx}"
+
+        # 1. nftables ruleset mitigation (e.g. RHSB-2026-016 / IPv4 TCP IP-options filter)
+        if "nft -f -" in cmd and "table inet " in cmd:
+            m_tbl = re.search(r"table inet ([A-Za-z0-9_]+)", cmd)
+            tbl_name = m_tbl.group(1) if m_tbl else safe_cve
+            m_eof = re.search(r"<<'EOF'\n(.*?)\nEOF", cmd, re.S)
+            nft_body = m_eof.group(1).strip() if m_eof else (
+                f"add table inet {tbl_name}\n"
+                f"delete table inet {tbl_name}\n"
+                f"table inet {tbl_name} {{\n"
+                f"  chain input {{\n"
+                f"    type filter hook input priority -310; policy accept;\n"
+                f"    ip protocol tcp ip hdrlength > 5 counter drop\n"
+                f"  }}\n"
+                f"}}"
+            )
+            nft_path = f"/etc/nftables.d/{tbl_name}.nft"
+            lines.extend([
+                f"{sid}_nftables_rule:",
+                "  file.managed:",
+                f"    - name: {nft_path}",
+                "    - user: root",
+                "    - group: root",
+                "    - mode: '0644'",
+                "    - makedirs: True",
+                "    - contents: |",
+                f"        # [Due to {attr}] {raw_title}",
+                f"        # Source / Verify: {' | '.join(urls)}",
+            ])
+            for nln in nft_body.splitlines():
+                lines.append(f"        {nln}")
+            lines.extend([
+                "",
+                f"{sid}_nftables_apply:",
+                "  cmd.run:",
+                f"    - name: nft --file {nft_path}",
+                "    - onchanges:",
+                f"      - file: {sid}_nftables_rule",
+                ""
+            ])
+            continue
+
+        # 2. GRUB2 configuration permissions & Secure Boot verification
+        if "chmod 600 /boot/grub2/grub.cfg" in cmd:
+            lines.extend([
+                f"{sid}_grub_cfg_perms:",
+                "  file.managed:",
+                "    - name: /boot/grub2/grub.cfg",
+                "    - user: root",
+                "    - group: root",
+                "    - mode: '0600'",
+                "    - create: False",
+                "    - onlyif: test -f /boot/grub2/grub.cfg",
+                "",
+                f"{sid}_verify_secure_boot:",
+                "  cmd.run:",
+                "    - name: mokutil --sb-state || true",
+                ""
+            ])
+            continue
+
+        # 3. systemd / profile JVM flags
+        if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
+            m = re.search(r'JDK_JAVA_OPTIONS=([^"\\]+)', cmd)
+            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+            if not state.get("emitted_systemd"):
+                dir_id = "cve_batch_systemd_dir" if prefix_batch else f"{sid}_systemd_dir"
+                drop_id = "cve_batch_systemd_java_dropin" if prefix_batch else f"{sid}_systemd_java_dropin"
+                lines.extend([
+                    f"{dir_id}:",
+                    "  file.directory:",
+                    "    - name: /etc/systemd/system.conf.d",
+                    "    - makedirs: True",
+                    "",
+                    f"{drop_id}:",
+                    "  file.managed:",
+                    "    - name: /etc/systemd/system.conf.d/99-cve-java.conf",
+                    "    - contents: |",
+                    "        [Manager]",
+                    f'        DefaultEnvironment="JDK_JAVA_OPTIONS={flags}"',
+                    "    - require:",
+                    f"      - file: {dir_id}",
+                    ""
+                ])
+                state["emitted_systemd"] = True
+                state["systemd_dropin_id"] = drop_id
+            if not state.get("emitted_profile"):
+                prof_id = "cve_batch_profile_java_dropin" if prefix_batch else f"{sid}_profile_java_dropin"
+                lines.extend([
+                    f"{prof_id}:",
+                    "  file.managed:",
+                    "    - name: /etc/profile.d/cve-java.sh",
+                    "    - mode: '0644'",
+                    "    - contents: |",
+                    f'        export JDK_JAVA_OPTIONS="{flags}"',
+                    ""
+                ])
+                state["emitted_profile"] = True
+            continue
+
+        # 4. Tomcat JVM drop-in
+        if "/etc/tomcat/conf.d" in cmd:
+            if not state.get("emitted_tomcat"):
+                m = re.search(r'JAVA_OPTS="\$\{JAVA_OPTS\} ([^"]+)"', cmd)
+                flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
+                tom_id = "cve_batch_tomcat_dropin" if prefix_batch else f"{sid}_tomcat_dropin"
+                lines.extend([
+                    f"{tom_id}:",
+                    "  file.managed:",
+                    "    - name: /etc/tomcat/conf.d/99-cve-mitigation.conf",
+                    "    - contents: |",
+                    f'        JAVA_OPTS="${{JAVA_OPTS}} {flags}"',
+                    "    - onlyif: test -d /etc/tomcat/conf.d",
+                    ""
+                ])
+                state["emitted_tomcat"] = True
+                state["tomcat_dropin_id"] = tom_id
+            continue
+
+        # 5. OpenSSH LoginGraceTime drop-in
+        if "LoginGraceTime 0" in cmd and "/etc/ssh/sshd_config.d/" in cmd:
+            lines.extend([
+                f"{sid}_sshd_mitigation:",
+                "  file.managed:",
+                "    - name: /etc/ssh/sshd_config.d/99-cve-mitigation.conf",
+                "    - user: root",
+                "    - group: root",
+                "    - mode: '0644'",
+                "    - makedirs: True",
+                "    - check_cmd: /usr/sbin/sshd -t -f",
+                "    - contents: |",
+                f"        # [Due to {attr}] {raw_title}",
+                "        LoginGraceTime 0",
+                "",
+                f"{sid}_sshd_reload:",
+                "  service.running:",
+                "    - name: sshd",
+                "    - reload: True",
+                "    - watch:",
+                f"      - file: {sid}_sshd_mitigation",
+                ""
+            ])
+            continue
+
+        # 6. Kernel module modprobe blacklist
+        if "/etc/modprobe.d/" in cmd and "install " in cmd and "/bin/true" in cmd:
+            m_dst = re.search(r"(/etc/modprobe\.d/[A-Za-z0-9_.\-]+\.conf)", cmd)
+            dst_file = m_dst.group(1) if m_dst else "/etc/modprobe.d/cve-mitigation.conf"
+            mods = re.findall(r"install\s+([A-Za-z0-9_\-]+)\s+/bin/true", cmd)
+            if mods:
+                lines.extend([
+                    f"{sid}_modprobe_blacklist:",
+                    "  file.managed:",
+                    f"    - name: {dst_file}",
+                    "    - mode: '0644'",
+                    "    - makedirs: True",
+                    "    - contents: |",
+                    f"        # [Due to {attr}] {raw_title}",
+                ])
+                for mod in mods:
+                    lines.append(f"        install {mod} /bin/true")
+                lines.append("")
+                for mod in mods:
+                    safe_mod = re.sub(r"[^A-Za-z0-9_]", "_", mod)
+                    lines.extend([
+                        f"{sid}_unload_{safe_mod}:",
+                        "  kmod.absent:",
+                        f"    - name: {mod}",
+                        ""
+                    ])
+                continue
+
+        # 7. sysctl kernel hardening (preserving custom /etc/sysctl.d/*.conf path if specified)
+        if cmd.startswith("sysctl -w "):
+            m_sc = re.search(r"(/etc/sysctl\.d/[A-Za-z0-9_.\-]+\.conf)", cmd)
+            sysctl_file = m_sc.group(1) if m_sc else "/etc/sysctl.d/99-cve-mitigation.conf"
+            kv_tokens = [tok for tok in cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip().split() if "=" in tok]
+            for idx_kv, kv in enumerate(kv_tokens, 1):
+                k_name, k_val = [x.strip() for x in kv.split("=", 1)]
+                if (k_name, k_val) in state["seen_sysctls"]:
+                    continue
+                state["seen_sysctls"].add((k_name, k_val))
+                state_id = f"{sid}_sysctl_{idx_kv}" if prefix_batch else f"{sid}_sysctl"
+                lines.extend([
+                    f"{state_id}:",
+                    "  sysctl.present:",
+                    f"    - name: {k_name}",
+                    f"    - value: '{k_val}'",
+                    f"    - config: {sysctl_file}",
+                    ""
+                ])
+            continue
+
+        # 8. Active Java process inspection
+        if "ps -ef | grep" in cmd:
+            lines.extend([
+                f"{sid}_verify_java_flags:",
+                "  cmd.run:",
+                "    - name: ps -ef | grep -E '[j]ava' || true",
+                ""
+            ])
+            continue
+
+        # 9. Generic multi-line-safe cmd.run fallback
+        if "\n" in cmd:
+            lines.extend([
+                f"{sid}_exec:",
+                "  cmd.run:",
+                "    - name: |",
+            ])
+            for cln in cmd.splitlines():
+                lines.append(f"        {cln}")
+            lines.append("")
+        else:
+            lines.extend([
+                f"{sid}_exec:",
+                "  cmd.run:",
+                f"    - name: {cmd}",
+                ""
+            ])
+
+    return step_idx
+
+
+def _append_salt_handlers(lines: list, state: dict, prefix_id: str) -> None:
+    if state.get("systemd_dropin_id"):
+        lines.extend([
+            f"{prefix_id}_systemd_daemon_reload:",
+            "  cmd.run:",
+            "    - name: systemctl daemon-reload",
+            "    - onchanges:",
+            f"      - file: {state['systemd_dropin_id']}",
+            ""
+        ])
+    if state.get("tomcat_dropin_id"):
+        lines.extend([
+            f"{prefix_id}_restart_java_services:",
+            "  cmd.run:",
+            "    - name: spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
+            "    - onchanges:",
+            f"      - file: {state['tomcat_dropin_id']}",
+            ""
+        ])
+
+
 def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_workaround: bool = False) -> str:
     safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
+    cvss = mitigation_data.get("cvss", "N/A")
+    vec = mitigation_data.get("attack_vector", "UNKNOWN")
+    kev = "YES (CISA KEV)" if (mitigation_data.get("cisa_kev") or {}).get("known_exploited") else "No"
+    bz_list = mitigation_data.get("bugzilla") or []
     lines = [
         f"# Auto-generated SaltStack State for {cve} (Target: {rel_arg})",
+        f"# CVSS    : {cvss} | Vector: {vec} | CISA KEV: {kev}",
+        f"# Advisory: https://www.suse.com/security/cve/{cve}.html | https://nvd.nist.gov/vuln/detail/{cve}",
+    ]
+    if bz_list:
+        lines.append(f"# Bugzilla: {', '.join(bz_list[:4])}")
+    lines.extend([
         f"# Save to : /srv/salt/{safe_cve}.sls  (or /srv/salt/{cve}.sls -> state.apply {cve})",
         f"# Dry-run : salt -G 'os_family:Suse' state.apply {safe_cve} test=True",
         f"# Apply   : salt -G 'os_family:Suse' state.apply {safe_cve}",
@@ -1741,7 +2031,7 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
         "# DISCLAIMER: Provided as-is without warranty. Service names, config paths (Tomcat/systemd/wrapper),",
         "# and runtime flags may vary across SLES versions, SUMA/Uyuni, or custom setups. Test before production rollout.",
         ""
-    ]
+    ])
 
     rems = mitigation_data.get("remediation") or []
     sugs = mitigation_data.get("suggestions") or []
@@ -1750,6 +2040,8 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
         rem = rems[0]
         cmd = rem["cmd"].split("  #")[0].strip()
         is_micro = "transactional-update" in cmd
+        lines.append(f"# [Due to Official SUSE Vendor Patch] {rem.get('title', 'Apply vendor security update')}")
+        lines.append(f"# Source / Verify: https://www.suse.com/security/cve/{cve}.html")
         lines.extend([
             f"{safe_cve}_refresh_and_patch:",
             "  cmd.run:",
@@ -1765,112 +2057,16 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
             lines.extend([
                 f"{safe_cve}_reboot_notice:",
                 "  test.show_notification:",
-                f"    - text: \"Patch for {cve} applied — schedule system reboot to activate updated kernel/core libraries.\"",
+                f'    - text: "Patch for {cve} applied — schedule system reboot to activate updated kernel/core libraries."',
                 "    - require:",
                 f"      - cmd: {safe_cve}_refresh_and_patch",
                 ""
             ])
         return "\n".join(lines)
 
-    has_systemd_reload = False
-    has_java_restart = False
-    step_idx = 0
-
-    for s in sugs:
-        cmd = s.get("cmd", "").strip()
-        title = s.get("title", "")
-        if not cmd or cmd.startswith("#") or cmd.startswith("true"):
-            lines.append(f"# {title}")
-            continue
-
-        step_idx += 1
-        sid = f"{safe_cve}_step_{step_idx}"
-
-        if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
-            m = re.search(r'JDK_JAVA_OPTIONS=([^"\\\\]+)', cmd)
-            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
-            lines.extend([
-                f"{sid}_systemd_dir:",
-                "  file.directory:",
-                "    - name: /etc/systemd/system.conf.d",
-                "    - makedirs: True",
-                "",
-                f"{sid}_systemd_java_dropin:",
-                "  file.managed:",
-                "    - name: /etc/systemd/system.conf.d/99-cve-java.conf",
-                "    - contents: |",
-                "        [Manager]",
-                f"        DefaultEnvironment=\"JDK_JAVA_OPTIONS={flags}\"",
-                "    - require:",
-                f"      - file: {sid}_systemd_dir",
-                "",
-                f"{sid}_profile_java_dropin:",
-                "  file.managed:",
-                "    - name: /etc/profile.d/cve-java.sh",
-                "    - mode: '0644'",
-                "    - contents: |",
-                f"        export JDK_JAVA_OPTIONS=\"{flags}\"",
-                ""
-            ])
-            has_systemd_reload = True
-        elif "/etc/tomcat/conf.d" in cmd:
-            m = re.search(r'JAVA_OPTS="\\$\\{JAVA_OPTS\\} ([^"]+)"', cmd)
-            flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
-            lines.extend([
-                f"{sid}_tomcat_dropin:",
-                "  file.managed:",
-                "    - name: /etc/tomcat/conf.d/99-cve-mitigation.conf",
-                "    - contents: |",
-                f"        JAVA_OPTS=\"${{JAVA_OPTS}} {flags}\"",
-                "    - onlyif: test -d /etc/tomcat/conf.d",
-                ""
-            ])
-            has_java_restart = True
-        elif cmd.startswith("sysctl -w "):
-            kv = cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip()
-            if "=" in kv:
-                k_name, k_val = [x.strip() for x in kv.split("=", 1)]
-                lines.extend([
-                    f"{sid}_sysctl:",
-                    "  sysctl.present:",
-                    f"    - name: {k_name}",
-                    f"    - value: '{k_val}'",
-                    "    - config: /etc/sysctl.d/99-cve-mitigation.conf",
-                    ""
-                ])
-        elif "ps -ef | grep" in cmd:
-            lines.extend([
-                f"{sid}_verify_java_flags:",
-                "  cmd.run:",
-                "    - name: ps -ef | grep -E '[j]ava' || true",
-                ""
-            ])
-        else:
-            lines.extend([
-                f"{sid}_exec:",
-                "  cmd.run:",
-                f"    - name: {cmd}",
-                ""
-            ])
-
-    if has_systemd_reload:
-        lines.extend([
-            f"{safe_cve}_systemd_daemon_reload:",
-            "  cmd.run:",
-            "    - name: systemctl daemon-reload",
-            "    - onchanges:",
-            f"      - file: {safe_cve}_step_1_systemd_java_dropin",
-            ""
-        ])
-    if has_java_restart:
-        lines.extend([
-            f"{safe_cve}_restart_java_services:",
-            "  cmd.run:",
-            "    - name: spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
-            "    - onchanges:",
-            f"      - file: {safe_cve}_step_2_tomcat_dropin",
-            ""
-        ])
+    state = {"seen_sysctls": set()}
+    step_idx = _emit_salt_suggestion_states(cve, sugs, lines, state, prefix_batch=False)
+    _append_salt_handlers(lines, state, safe_cve)
 
     if step_idx == 0:
         noop_msg = sugs[0].get("title", f"No actionable SLES workaround required for {cve}").replace('"', "'") if sugs else f"No actionable SLES workaround required for {cve}"
@@ -2361,129 +2557,18 @@ def render_batch_salt_config(rel_arg: str, batch_items: list, force_workaround: 
                 ""
             ])
 
-    emitted_systemd = False
-    emitted_profile = False
-    emitted_tomcat = False
-    has_systemd_reload = False
-    has_java_restart = False
-    seen_sysctls = set()
+    state = {"seen_sysctls": set()}
 
     for cve, mit in workaround_items:
-        safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
         sugs = mit.get("suggestions") or []
         lines.append(f"# --- Compensating Workarounds: {cve} ---")
-        step_idx = 0
-        for s in sugs:
-            cmd = s.get("cmd", "").strip()
-            title = s.get("title", "")
-            if not cmd or cmd.startswith("#") or cmd.startswith("true"):
-                lines.append(f"# {title}")
-                continue
-            step_idx += 1
-            sid = f"{safe_cve}_step_{step_idx}"
-
-            if "DefaultEnvironment=" in cmd and "99-cve-java.conf" in cmd:
-                if not emitted_systemd:
-                    m = re.search(r'JDK_JAVA_OPTIONS=([^"\\]+)', cmd)
-                    flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
-                    lines.extend([
-                        "cve_batch_systemd_dir:",
-                        "  file.directory:",
-                        "    - name: /etc/systemd/system.conf.d",
-                        "    - makedirs: True",
-                        "",
-                        "cve_batch_systemd_java_dropin:",
-                        "  file.managed:",
-                        "    - name: /etc/systemd/system.conf.d/99-cve-java.conf",
-                        "    - contents: |",
-                        "        [Manager]",
-                        f"        DefaultEnvironment=\"JDK_JAVA_OPTIONS={flags}\"",
-                        "    - require:",
-                        "      - file: cve_batch_systemd_dir",
-                        ""
-                    ])
-                    emitted_systemd = True
-                    has_systemd_reload = True
-                if not emitted_profile:
-                    m = re.search(r'JDK_JAVA_OPTIONS=([^"\\]+)', cmd)
-                    flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
-                    lines.extend([
-                        "cve_batch_profile_java_dropin:",
-                        "  file.managed:",
-                        "    - name: /etc/profile.d/cve-java.sh",
-                        "    - mode: '0644'",
-                        "    - contents: |",
-                        f"        export JDK_JAVA_OPTIONS=\"{flags}\"",
-                        ""
-                    ])
-                    emitted_profile = True
-            elif "/etc/tomcat/conf.d" in cmd:
-                if not emitted_tomcat:
-                    m = re.search(r'JAVA_OPTS="\$\{JAVA_OPTS\} ([^"]+)"', cmd)
-                    flags = m.group(1) if m else "-XX:-UseBASE64Intrinsics"
-                    lines.extend([
-                        "cve_batch_tomcat_dropin:",
-                        "  file.managed:",
-                        "    - name: /etc/tomcat/conf.d/99-cve-mitigation.conf",
-                        "    - contents: |",
-                        f"        JAVA_OPTS=\"${{JAVA_OPTS}} {flags}\"",
-                        "    - onlyif: test -d /etc/tomcat/conf.d",
-                        ""
-                    ])
-                    emitted_tomcat = True
-                    has_java_restart = True
-            elif cmd.startswith("sysctl -w "):
-                kv_tokens = [tok for tok in cmd.split("sysctl -w ", 1)[1].split("&&")[0].strip().split() if "=" in tok]
-                for idx_kv, kv in enumerate(kv_tokens, 1):
-                    k_name, k_val = [x.strip() for x in kv.split("=", 1)]
-                    if (k_name, k_val) in seen_sysctls:
-                        continue
-                    seen_sysctls.add((k_name, k_val))
-                    lines.extend([
-                        f"{sid}_sysctl_{idx_kv}:",
-                        "  sysctl.present:",
-                        f"    - name: {k_name}",
-                        f"    - value: '{k_val}'",
-                        "    - config: /etc/sysctl.d/99-cve-mitigation.conf",
-                        ""
-                    ])
-            elif "ps -ef | grep" in cmd:
-                lines.extend([
-                    f"{sid}_verify_java_flags:",
-                    "  cmd.run:",
-                    "    - name: ps -ef | grep -E '[j]ava' || true",
-                    ""
-                ])
-            else:
-                lines.extend([
-                    f"{sid}_exec:",
-                    "  cmd.run:",
-                    f"    - name: {cmd}",
-                    ""
-                ])
+        step_idx = _emit_salt_suggestion_states(cve, sugs, lines, state, prefix_batch=True)
 
         if step_idx == 0:
             noop_msg = sugs[0].get("title", f"No automated SLES workaround available for {cve}").replace('"', "'") if sugs else f"No automated SLES workaround available for {cve}"
             noop_items.append((cve, noop_msg))
 
-    if has_systemd_reload:
-        lines.extend([
-            "cve_batch_systemd_daemon_reload:",
-            "  cmd.run:",
-            "    - name: systemctl daemon-reload",
-            "    - onchanges:",
-            "      - file: cve_batch_systemd_java_dropin",
-            ""
-        ])
-    if has_java_restart:
-        lines.extend([
-            "cve_batch_restart_java_services:",
-            "  cmd.run:",
-            "    - name: spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search",
-            "    - onchanges:",
-            "      - file: cve_batch_tomcat_dropin",
-            ""
-        ])
+    _append_salt_handlers(lines, state, "cve_batch")
 
     for cve, msg in noop_items:
         safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
