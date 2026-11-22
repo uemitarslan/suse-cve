@@ -456,33 +456,82 @@ def fetch_redhat_intel(cve_id: str) -> dict:
         bz = data.get("bugzilla")
         if isinstance(bz, dict):
             res["bugzilla_desc"] = bz.get("description", "").strip()
+
+        res["page_url"] = f"https://access.redhat.com/security/cve/{cve_id}"
+        if "see the security bulletin" in res["mitigation"].lower():
+            try:
+                import html as _html
+                proc_p = subprocess.run(
+                    ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", res["page_url"]],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=True
+                )
+                p_html = proc_p.stdout.decode("utf-8", errors="ignore")
+                m_rhsb = re.search(r"(RHSB-\d{4}-\d+)", p_html)
+                if m_rhsb:
+                    rhsb_id = m_rhsb.group(1)
+                    res["page_url"] = f"https://access.redhat.com/security/vulnerabilities/{rhsb_id}"
+                    res["rhsb_id"] = rhsb_id
+                    proc_b = subprocess.run(
+                        ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", res["page_url"]],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        check=True
+                    )
+                    b_html = proc_b.stdout.decode("utf-8", errors="ignore")
+                    b_txt = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", b_html))).strip()
+                    m_sec = re.search(r"Mitigation\s+(.*?)(?:Reverting After Patching|Affected Packages|Acknowledgements)", b_txt, re.I)
+                    if m_sec and len(m_sec.group(1)) > 30:
+                        res["mitigation"] = m_sec.group(1).strip()[:1600]
+            except Exception:
+                pass
     except Exception:
         pass
     return res
 
 
-def fetch_ubuntu_notes(cve_id: str) -> list:
-    """Fetch security maintainer notes from the public Ubuntu CVE Tracker (CC BY-SA)."""
-    ub_url = f"https://ubuntu.com/security/cves/{cve_id}.json"
-    notes = []
+def fetch_ubuntu_notes(cve_id: str) -> dict:
+    """Fetch security maintainer notes and Mitigation section from Ubuntu Security (CC BY-SA)."""
+    ub_json_url = f"https://ubuntu.com/security/cves/{cve_id}.json"
+    ub_html_url = f"https://ubuntu.com/security/{cve_id}"
+    res = {"notes": [], "mitigation": "", "url": ub_html_url}
     try:
         proc = subprocess.run(
-            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", ub_url],
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", ub_json_url],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True
         )
         raw = proc.stdout.decode("utf-8", errors="ignore").strip()
-        if not raw or not raw.startswith("{"):
-            return notes
-        data = json.loads(raw)
-        for n in data.get("notes", []):
-            txt = n.get("note", "").strip()
-            if txt and len(txt) > 15:
-                notes.append(re.sub(r'\s+', ' ', txt))
+        if raw and raw.startswith("{"):
+            data = json.loads(raw)
+            for n in data.get("notes", []):
+                txt = n.get("note", "").strip()
+                if txt and len(txt) > 15:
+                    res["notes"].append(re.sub(r'\s+', ' ', txt))
+            res["notes"] = res["notes"][:3]
     except Exception:
         pass
-    return notes[:3]
+
+    try:
+        import html as _html
+        proc_h = subprocess.run(
+            ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", ub_html_url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        page = proc_h.stdout.decode("utf-8", errors="ignore")
+        m_mit = re.search(r"id=[\"']mitigation[\"'][^>]*>.*?</h[23]>(.*?)(?:<h[23]\b|</section>)", page, re.S | re.I)
+        if m_mit:
+            cleaned = _html.unescape(re.sub(r"<[^>]+>", " ", m_mit.group(1)))
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if len(cleaned) > 30:
+                res["mitigation"] = cleaned[:1600]
+    except Exception:
+        pass
+    return res
 
 
 def fetch_suse_bugzilla_workarounds(bugzilla_urls: list) -> list:
@@ -595,7 +644,12 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
     kev_info = fetch_cisa_kev(cve_id)
     rh_info = fetch_redhat_intel(cve_id)
-    ub_notes = fetch_ubuntu_notes(cve_id)
+    ub_data = fetch_ubuntu_notes(cve_id)
+    ub_notes = ub_data.get("notes", []) if isinstance(ub_data, dict) else (ub_data or [])
+    ub_mit = ub_data.get("mitigation", "") if isinstance(ub_data, dict) else ""
+    ub_url = ub_data.get("url", f"https://ubuntu.com/security/{cve_id}") if isinstance(ub_data, dict) else f"https://ubuntu.com/security/{cve_id}"
+    rh_page_url = rh_info.get("page_url") or f"https://access.redhat.com/security/cve/{cve_id}"
+    rh_label = f"Red Hat ({rh_info['rhsb_id']})" if rh_info.get("rhsb_id") else "Red Hat Security"
 
     if not description and rh_info.get("bugzilla_desc"):
         description = rh_info["bugzilla_desc"]
@@ -604,13 +658,65 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     rh_mit = rh_info.get("mitigation", "")
     if "see the security bulletin" in rh_mit.lower():
         rh_mit = ""
-    combined_intel = " ".join([core_desc, rh_mit, " ".join(ub_notes)]).lower()
+    full_intel = " ".join([description, rh_mit, ub_mit, " ".join(ub_notes)]).lower()
+    combined_intel = core_desc.lower()
 
     suggestions = []
+
+    # Detect IPv4 TCP IP-options / ip hdrlength > 5 firewall mitigation (e.g. CVE-2026-98432)
+    if ("ip hdrlength" in full_intel or ("inet_opt" in full_intel and "ireq_opt" in full_intel) or "ip options" in full_intel):
+        src_names = []
+        src_urls = []
+        if "ip hdrlength" in rh_mit.lower() or rh_info.get("rhsb_id"):
+            src_names.append(rh_label)
+            src_urls.append(rh_page_url)
+        if "ip hdrlength" in ub_mit.lower() or "ip options" in ub_mit.lower():
+            src_names.append("Ubuntu Security")
+            src_urls.append(ub_url)
+        if not src_names:
+            src_names = [rh_label, "Ubuntu Security"]
+            src_urls = [rh_page_url, ub_url]
+        safe_tbl = re.sub(r"[^A-Za-z0-9_]", "_", cve_id.lower())
+        suggestions.append({
+            "title": "Drop incoming IPv4 TCP packets carrying IP options via nftables (reduces exposure without reboot)",
+            "source_attribution": " & ".join(src_names),
+            "source_urls": src_urls,
+            "cmd": (
+                f"nft -f - <<'EOF'\n"
+                f"add table inet {safe_tbl}\n"
+                f"delete table inet {safe_tbl}\n"
+                f"table inet {safe_tbl} {{\n"
+                f"  chain input {{\n"
+                f"    type filter hook input priority -310; policy accept;\n"
+                f"    ip protocol tcp ip hdrlength > 5 counter drop\n"
+                f"  }}\n"
+                f"}}\n"
+                f"EOF\n"
+                f"nft list table inet {safe_tbl}  # Remove after kernel reboot: nft delete table inet {safe_tbl}"
+            )
+        })
+
+    # Detect tcp_migrate_req / MPTCP sysctl hardening mentioned in kernel advisory / vendor bulletins
+    if "tcp_migrate_req" in full_intel:
+        suggestions.append({
+            "title": "Disable TCP request socket migration (closes secondary migration race vector)",
+            "source_attribution": "Upstream Linux Kernel CNA / NVD Advisory",
+            "source_urls": [f"https://nvd.nist.gov/vuln/detail/{cve_id}"],
+            "cmd": f"sysctl -w net.ipv4.tcp_migrate_req=0 && echo 'net.ipv4.tcp_migrate_req = 0' > /etc/sysctl.d/99-{cve_id.lower()}-migrate.conf"
+        })
+    if "mptcp" in full_intel or "net.mptcp.enabled" in full_intel:
+        suggestions.append({
+            "title": "Ensure Multipath TCP (MPTCP) is disabled unless required",
+            "source_attribution": f"{rh_label} / Kernel Advisory",
+            "source_urls": [rh_page_url],
+            "cmd": f"sysctl -w net.mptcp.enabled=0 2>/dev/null || true"
+        })
 
     if "io_uring" in combined_intel:
         suggestions.append({
             "title": "Disable io_uring (SLES 15 SP4+ / 16)",
+            "source_attribution": "Linux Kernel / SUSE Security Hardening",
+            "source_urls": [f"https://www.suse.com/security/cve/{cve_id}.html"],
             "cmd": "sysctl -w kernel.io_uring_disabled=2 && echo 'kernel.io_uring_disabled = 2' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
     if any(k in combined_intel for k in ("nf_tables", "netfilter", "nft_", "iptables")):
@@ -709,9 +815,11 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     if affected_pkgs:
         # Multi-source workaround harvester: Red Hat mitigation + SUSE Bugzilla comments + Ubuntu + NVD + SUSE Intel
         bz_workarounds = fetch_suse_bugzilla_workarounds(bugzilla_urls)
-        if rh_mit:
+        if rh_mit and not any(s.get("source_urls") and rh_page_url in s.get("source_urls", []) for s in suggestions):
             suggestions.insert(0, {
-                "title": f"Vendor Upstream Mitigation (Red Hat Security Advisory): {rh_mit}",
+                "title": f"Vendor Upstream Mitigation ({rh_label}): {rh_mit}",
+                "source_attribution": rh_label,
+                "source_urls": [rh_page_url],
                 "cmd": "# Review and apply the upstream workaround above to your affected SLES service/subsystem until SUSE patch release"
             })
         for bz_id, bz_txt in bz_workarounds:
@@ -2482,8 +2590,13 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
             w_hdr = "Recommended SLES Workarounds (No patch released yet):"
         print(f"\n  {CLR_BOLD}{w_hdr}{CLR_RESET}")
         for idx, s in enumerate(mit["suggestions"], 1):
-            print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
-            print(f"     {CLR_CYAN}$ {s['cmd']}{CLR_RESET}")
+            attr = s.get("source_attribution") or "Multi-Source Security Advisory"
+            urls = s.get("source_urls") or []
+            print(f"  {idx}. {CLR_MAG}[Due to {attr}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
+            if urls:
+                print(f"     {CLR_DIM}Source / Verify: {' | '.join(urls)}{CLR_RESET}")
+            for cln in str(s['cmd']).splitlines():
+                print(f"     {CLR_CYAN}$ {cln}{CLR_RESET}" if cln == str(s['cmd']).splitlines()[0] else f"       {CLR_CYAN}{cln}{CLR_RESET}")
         import textwrap
         disc_txt = mit.get("workaround_disclaimer") or 'Note: Workarounds are provided as-is without warranty and may not apply 1:1 to every environment. Service names, config paths (e.g., Tomcat, systemd, or wrapper layouts), and runtime flags can vary across SLES releases, SUSE Manager/Uyuni, or custom deployments—verify and adapt to your local setup before applying in production.'
         print(f"\n{CLR_DIM}{textwrap.fill(disc_txt, width=116, initial_indent='  ', subsequent_indent='  ')}{CLR_RESET}")
