@@ -233,7 +233,7 @@ csv_rows = list(_csv.reader(_io.StringIO(out_csv)))
 check(
     rc_csv == 0
     and len(csv_rows) == 4
-    and csv_rows[0] == ["CVE", "Target_Release", "Status", "Status_Detail", "Severity", "CVSS_Max", "CISA_KEV", "Lifecycle", "Recommended_Action", "CLI_Next_Step"]
+    and csv_rows[0] == ["CVE", "Target_Release", "Status", "Status_Detail", "Severity", "CVSS_Max", "CISA_KEV", "Lifecycle", "Recommended_Action", "CLI_Next_Step", "Mitigation_Sources", "Mitigations_Summary", "Verify_URLs", "Rollback_Commands"]
     and csv_rows[1][0] == "CVE-2026-0394"
     and csv_rows[1][5] == "5.3"
     and csv_rows[3][0] == "CVE-2026-98432"
