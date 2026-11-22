@@ -977,6 +977,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "attack_vector": attack_vector,
         "cwes": sorted(list(set(cwes))),
         "cisa_kev": kev_info,
+        "crisis_priority": "IMMEDIATE_MITIGATE" if kev_info.get("exploited") else "EVALUATE_MITIGATION",
         "description": description if description else "No public NVD/vendor description available yet (possibly still under embargo / reserved).",
         "redhat_mitigation": rh_info.get("mitigation", ""),
         "redhat_statement": rh_info.get("statement", ""),
@@ -1479,8 +1480,10 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 else:
                     has_unpatched = True
 
-    if not target_has_patches and mitigation_data and "remediation" in mitigation_data:
-        del mitigation_data["remediation"]
+    if not target_has_patches and mitigation_data:
+        if "remediation" in mitigation_data:
+            del mitigation_data["remediation"]
+        mitigation_data["crisis_priority"] = "IMMEDIATE_MITIGATE"
 
     if has_released and not has_qa and not has_in_progress and not has_unpatched:
         triage_status = "PATCHED (Patches released)"
@@ -1488,6 +1491,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         triage_status = "PARTIALLY PATCHED (Patches available for some releases/packages; others pending or unpatched)"
         if mitigation_data is not None:
             mitigation_data["partial_patch"] = True
+            if mitigation_data.get("crisis_priority") != "IMMEDIATE_MITIGATE":
+                mitigation_data["crisis_priority"] = "PATCH_OR_MITIGATE"
     elif has_qa:
         triage_status = "IN QA (Patches in testing — mitigation recommended until release)"
     elif has_in_progress:
@@ -2765,6 +2770,8 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     kev = mit.get("cisa_kev") or {}
     if kev.get("exploited"):
         print(f"  \033[1;31m[!] CISA KEV ALERT: ACTIVELY EXPLOITED (added {kev.get('date_added')} | Ransomware: {kev.get('ransomware')})\033[0m")
+    if kev.get("exploited") or not mit.get("remediation") or mit.get("partial_patch"):
+        print(f"  \033[1;33m[!] CRISIS MITIGATION PRIORITY: {mit.get('crisis_priority', 'IMMEDIATE_MITIGATE')} — Deploy source-verified workarounds below until full vendor patch & reboot complete.\033[0m")
 
     cwe_str = f" | {', '.join(mit['cwes'])}" if mit["cwes"] else ""
     si = mit.get("suse_intel") or {}
@@ -3093,18 +3100,33 @@ def _extract_item_audit_meta(item: dict, severity_str: str = "") -> dict:
 def render_batch_csv_report(rel_arg: str, rows: list, filtered_results: list) -> str:
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
-    w.writerow(["CVE", "Target_Release", "Status", "Status_Detail", "Severity", "CVSS_Max", "CISA_KEV", "Lifecycle", "Recommended_Action", "CLI_Next_Step"])
+    w.writerow(["CVE", "Target_Release", "Status", "Status_Detail", "Severity", "CVSS_Max", "CISA_KEV", "Lifecycle", "Recommended_Action", "CLI_Next_Step", "Mitigation_Sources", "Mitigations_Summary", "Verify_URLs", "Rollback_Commands"])
     by_cve = {it.get("cve", ""): it for it in filtered_results}
     for r in rows:
         cid = r["cve"]
-        meta = _extract_item_audit_meta(by_cve.get(cid, {}), r.get("severity", ""))
+        it_obj = by_cve.get(cid, {})
+        meta = _extract_item_audit_meta(it_obj, r.get("severity", ""))
         st_u = r["status"].upper()
         if "NOT AFFECTED" in st_u or st_u.startswith(("PATCHED", "RELEASED")):
             cmd = "None (Compliant / Patched)"
+            m_srcs = ""
+            m_sums = ""
+            m_urls = ""
+            m_rbs = ""
         else:
             flg = "--remediate" if ("PARTIALLY" in st_u and not r["action"].startswith(("suse-cve ", "No Patch", "Patch "))) else "--mitigate"
             cmd = f"suse-cve {rel_arg} {cid} {flg}"
-        w.writerow([cid, rel_arg, r["status"], r.get("status_detail", ""), r["severity"], meta["cvss"], meta["cisa_kev"], r["lifecycle"], r["action"], cmd])
+            sugs = (it_obj.get("mitigation") or {}).get("suggestions") or []
+            m_srcs = " | ".join(dict.fromkeys(s.get("source_attribution", "") for s in sugs if s.get("source_attribution")))
+            m_sums = " | ".join(f"[{s.get('source_attribution', 'Guidance')}] {s.get('title', '')}" for s in sugs if s.get("title"))
+            all_u = []
+            for s in sugs:
+                for u in (s.get("source_urls") or []):
+                    if u not in all_u:
+                        all_u.append(u)
+            m_urls = " | ".join(all_u)
+            m_rbs = " | ".join(s.get("rollback", "") for s in sugs if s.get("rollback"))
+        w.writerow([cid, rel_arg, r["status"], r.get("status_detail", ""), r["severity"], meta["cvss"], meta["cisa_kev"], r["lifecycle"], r["action"], cmd, m_srcs, m_sums, m_urls, m_rbs])
     return buf.getvalue().rstrip("\n")
 
 def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filtered_results: list, errors: list, status_filter: str = None, only_open: bool = False, only_kev: bool = False) -> str:
@@ -3165,7 +3187,11 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
                     mit_sections.append(f"   - **Rollback (post-patch):** `{sg['rollback']}`")
             mit_sections.append("")
         if mit_sections:
-            lines.extend(["", "## Compensating Mitigations & Hardening Details", ""])
+            lines.extend([
+                "", "## Compensating Mitigations & Hardening Details", "",
+                "> **CRISIS RESPONSE GUIDANCE:** When vendor patches are pending, partially released, or awaiting a reboot window, deploy the source-verified compensating controls below immediately and execute the listed post-patch rollback commands once official RPM updates are active.",
+                ""
+            ])
             lines.extend(mit_sections)
     if errors:
         lines.extend(["", "## Scan Errors", ""])

@@ -295,4 +295,27 @@ check(
     "Prevents false OVAL RELEASED status on SLES 12 SP5 SAP when web advisory reports Not affected",
 )
 
-print("\nALL 12 TEST SUITES PASSED.")
+
+
+print("\n=== 13. CRISIS MITIGATION ATTRIBUTION, ROLLBACKS & MULTI-FORMAT PARITY ===")
+rc_ccli, out_ccli, _ = run_cli("15sp7", "CVE-2026-98432", "--mitigate")
+check(rc_ccli == 0 and "[Due to Red Hat (RHSB-2026-016)]" in out_ccli and "Source / Verify: https://access.redhat.com/security/vulnerabilities/RHSB-2026-016" in out_ccli and "Rollback (post-patch): rm -f /etc/nftables.d/cve_2026_98432.nft" in out_ccli, "CLI --mitigate displays source attribution, Verify URLs, and post-patch rollback commands")
+
+rc_cans, out_cans, _ = run_cli("15sp7", "CVE-2026-98432,CVE-2026-97876", "--mitigate", "--ansible")
+check(rc_cans == 0 and "/etc/nftables.d/cve_2026_98432.nft" in out_cans and "nft --file /etc/nftables.d/cve_2026_98432.nft" in out_cans and "/boot/grub2/grub.cfg" in out_cans and "mode: '0600'" in out_cans and "nft -f - <<'EOF'" not in out_cans, "Ansible --mitigate uses native nftables/GRUB2 modules with source attribution instead of raw shell heredocs")
+
+rc_csalt, out_csalt, _ = run_cli("15sp7", "CVE-2026-98432,CVE-2026-97876", "--mitigate", "--salt")
+check(rc_csalt == 0 and "/etc/nftables.d/cve_2026_98432.nft" in out_csalt and "nft --file /etc/nftables.d/cve_2026_98432.nft" in out_csalt and "/boot/grub2/grub.cfg" in out_csalt and "mode: '0600'" in out_csalt and "nft -f - <<'EOF'" not in out_csalt, "SaltStack --mitigate uses native file.managed/cmd.run states with source attribution instead of raw shell heredocs")
+
+rc_cmd, out_cmd, _ = run_cli("15sp7", "CVE-2026-98432,CVE-2026-97876", "--markdown")
+check(rc_cmd == 0 and "## Compensating Mitigations & Hardening Details" in out_cmd and "**[Due to Red Hat (RHSB-2026-016)]**" in out_cmd and "**Rollback (post-patch):**" in out_cmd, "Markdown report embeds full source-attributed compensating mitigations and post-patch rollbacks")
+
+rc_ccsv, out_ccsv, _ = run_cli("15sp7", "CVE-2026-98432", "--csv")
+check(rc_ccsv == 0 and "Mitigation_Sources,Mitigations_Summary,Verify_URLs,Rollback_Commands" in out_ccsv and "Red Hat (RHSB-2026-016)" in out_ccsv, "CSV export includes Mitigation_Sources, Verify_URLs, and Rollback_Commands audit columns")
+
+rc_cjson, out_cjson, _ = run_cli("15sp7", "CVE-2026-98432", "--json")
+j_data = json.loads(out_cjson) if rc_cjson == 0 else {}
+j_sugs = (j_data.get("mitigation") or {}).get("suggestions") or []
+check(rc_cjson == 0 and any(s.get("source_attribution") and s.get("source_urls") and s.get("rollback") for s in j_sugs), "JSON output includes structured source_attribution, source_urls, and rollback fields on suggestions")
+
+print("\nALL 13 TEST SUITES PASSED.")
