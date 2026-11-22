@@ -1623,6 +1623,7 @@ def render_salt_config(cve: str, rel_arg: str, mitigation_data: dict, force_work
     safe_cve = re.sub(r'[^A-Za-z0-9_]', '_', cve.lower())
     lines = [
         f"# Auto-generated SaltStack State for {cve} (Target: {rel_arg})",
+        f"# Save to : /srv/salt/{safe_cve}.sls  (or /srv/salt/{cve}.sls -> state.apply {cve})",
         f"# Dry-run : salt -G 'os_family:Suse' state.apply {safe_cve} test=True",
         f"# Apply   : salt -G 'os_family:Suse' state.apply {safe_cve}",
         "#",
@@ -1965,6 +1966,7 @@ def render_batch_salt_config(rel_arg: str, batch_items: list, force_workaround: 
     lines = [
         f"# Auto-generated Multi-CVE SaltStack State ({len(cve_ids)} CVEs | Target: {rel_arg})",
         f"# CVEs    : {', '.join(cve_ids)}",
+        "# Save to : /srv/salt/cve_batch_remediation.sls  (Note: omit .sls & match exact case in state.apply)",
         "# Dry-run : salt -G 'os_family:Suse' state.apply cve_batch_remediation test=True",
         "# Apply   : salt -G 'os_family:Suse' state.apply cve_batch_remediation",
         "#",
