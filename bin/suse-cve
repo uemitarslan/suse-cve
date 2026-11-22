@@ -926,6 +926,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
 
     return {
+        "cve_id": cve_id,
         "cvss": cvss_score,
         "attack_vector": attack_vector,
         "cwes": sorted(list(set(cwes))),
