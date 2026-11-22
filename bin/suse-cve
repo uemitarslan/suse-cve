@@ -1180,12 +1180,38 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             if not raw_status_map[lower_st]:
                 del raw_status_map[lower_st]
 
+    if web_ok and "RELEASED" in raw_status_map:
+        na_pkgs_by_ver = {}
+        for na_p, na_pkgs in web_map.get("NOT AFFECTED", {}).items():
+            m_v = re.search(r"\b(\d+(?: SP\d+)?)\b", na_p)
+            if m_v:
+                na_pkgs_by_ver.setdefault(m_v.group(1), set()).update(na_pkgs)
+        for p_rel in list(raw_status_map["RELEASED"].keys()):
+            if p_rel not in web_map.get("RELEASED", {}) and p_rel not in patch_map:
+                m_v = re.search(r"\b(\d+(?: SP\d+)?)\b", p_rel)
+                ver_na_pkgs = na_pkgs_by_ver.get(m_v.group(1), set()) if m_v else set()
+                moved = raw_status_map["RELEASED"][p_rel] & ver_na_pkgs
+                if moved:
+                    raw_status_map["RELEASED"][p_rel] -= moved
+                    raw_status_map.setdefault("NOT AFFECTED", {}).setdefault(p_rel, set()).update(moved)
+                    if not raw_status_map["RELEASED"][p_rel]:
+                        del raw_status_map["RELEASED"][p_rel]
+        if not raw_status_map["RELEASED"]:
+            del raw_status_map["RELEASED"]
+
     if "NOT AFFECTED" in raw_status_map:
         for p in list(raw_status_map["NOT AFFECTED"].keys()):
             if p in rel_dict:
-                raw_status_map["NOT AFFECTED"][p] -= rel_dict[p]
+                if web_ok and p not in web_map.get("RELEASED", {}) and p not in patch_map:
+                    rel_dict[p] -= raw_status_map["NOT AFFECTED"][p]
+                    if not rel_dict[p]:
+                        del rel_dict[p]
+                else:
+                    raw_status_map["NOT AFFECTED"][p] -= rel_dict[p]
             if not raw_status_map["NOT AFFECTED"][p]:
                 del raw_status_map["NOT AFFECTED"][p]
+        if not rel_dict and "RELEASED" in raw_status_map:
+            del raw_status_map["RELEASED"]
         if not raw_status_map["NOT AFFECTED"]:
             del raw_status_map["NOT AFFECTED"]
 

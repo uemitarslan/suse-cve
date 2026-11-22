@@ -285,4 +285,14 @@ check(
     "Separates unaffected source package (dovecot) from affected binary package (dovecot23) in [AFFECTED] vs [NOT AFFECTED]",
 )
 
+rc_mp12, out_mp12, _ = run_cli("12sp5", "CVE-2026-0394", "--json")
+data_mp12 = json.loads(out_mp12)
+check(
+    rc_mp12 == 0
+    and data_mp12.get("meta", {}).get("patched_releases") == []
+    and "RELEASED" not in data_mp12.get("results", {})
+    and "dovecot" in data_mp12.get("results", {}).get("NOT AFFECTED", {}).get("SUSE Linux Enterprise Server for SAP Applications 12 SP5", []),
+    "Prevents false OVAL RELEASED status on SLES 12 SP5 SAP when web advisory reports Not affected",
+)
+
 print("\nALL 12 TEST SUITES PASSED.")
