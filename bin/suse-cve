@@ -2257,7 +2257,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
                     "      when: zypper_patch_out is changed",
                     ""
                 ])
-        lines = [(" " * 4 + ln if ln.startswith("- name:") and not ln.startswith("- name: Remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
+        lines = [("    " + ln.lstrip() if ln.lstrip().startswith("- name:") and not ln.lstrip().startswith("- name: Remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
         return "\n".join(lines)
 
     state = {"seen_sysctls": set()}
@@ -2274,7 +2274,7 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
         ])
 
     _append_ansible_handlers(lines, state)
-    lines = [(" " * 4 + ln if ln.startswith("- name:") and not ln.startswith("- name: Remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
+    lines = [("    " + ln.lstrip() if ln.lstrip().startswith("- name:") and not ln.lstrip().startswith("- name: Remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
     return "\n".join(lines)
 
 
@@ -2620,7 +2620,7 @@ def render_batch_ansible_config(rel_arg: str, batch_items: list, force_workaroun
         ])
 
     _append_ansible_handlers(lines, state)
-    lines = [(" " * 4 + ln if ln.startswith("- name:") and not ln.startswith("- name: Batch remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
+    lines = [("    " + ln.lstrip() if ln.lstrip().startswith("- name:") and not ln.lstrip().startswith("- name: Batch remediate") else ln) for ln in ("\n".join(lines)).splitlines()]
     return "\n".join(lines)
 
 
