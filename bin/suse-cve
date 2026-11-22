@@ -595,6 +595,52 @@ def fetch_suse_bugzilla_workarounds(bugzilla_urls: list) -> list:
     return findings[:3]
 
 
+def _enrich_suggestions_for_crisis(cve_id: str, suggestions: list) -> list:
+    default_urls = [
+        f"https://www.suse.com/security/cve/{cve_id}.html",
+        f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+    ]
+
+    def _derive_rollback(cmd_str: str) -> str:
+        c = (cmd_str or "").strip()
+        if not c or c.startswith("#") or c.startswith("true"):
+            return ""
+        if "nft -f -" in c and "table inet " in c:
+            m_t = re.search(r"table inet ([A-Za-z0-9_]+)", c)
+            tbl = m_t.group(1) if m_t else "cve_mitigation"
+            return f"rm -f /etc/nftables.d/{tbl}.nft && nft delete table inet {tbl} 2>/dev/null || true"
+        if c.startswith("sysctl -w "):
+            m_sc = re.search(r"(/etc/sysctl\.d/[A-Za-z0-9_.\-]+\.conf)", c)
+            sc_file = m_sc.group(1) if m_sc else "/etc/sysctl.d/99-cve-mitigation.conf"
+            return f"rm -f {sc_file} && sysctl --system"
+        if "LoginGraceTime 0" in c and "/etc/ssh/sshd_config.d/" in c:
+            return "rm -f /etc/ssh/sshd_config.d/99-cve-mitigation.conf && sshd -t && systemctl reload sshd"
+        if "/etc/modprobe.d/" in c and "install " in c:
+            m_mp = re.search(r"(/etc/modprobe\.d/[A-Za-z0-9_.\-]+\.conf)", c)
+            mp_file = m_mp.group(1) if m_mp else "/etc/modprobe.d/cve-mitigation.conf"
+            mods = re.findall(r"install\s+([A-Za-z0-9_\-]+)\s+/bin/true", c)
+            mod_reload = f" && modprobe {' '.join(mods)}" if mods else ""
+            return f"rm -f {mp_file}{mod_reload}"
+        if "DefaultEnvironment=" in c and "99-cve-java.conf" in c:
+            return "rm -f /etc/systemd/system.conf.d/99-cve-java.conf /etc/profile.d/cve-java.sh && systemctl daemon-reload"
+        if "/etc/tomcat/conf.d" in c:
+            return "rm -f /etc/tomcat/conf.d/99-cve-mitigation.conf && (spacewalk-service restart 2>/dev/null || systemctl try-restart tomcat taskomatic rhn-search)"
+        if "chmod 600 /boot/grub2/grub.cfg" in c:
+            return "chmod 644 /boot/grub2/grub.cfg  # Optional: restore default permissions after patched grub2 reboot"
+        return ""
+
+    for s in suggestions:
+        if not s.get("source_attribution"):
+            s["source_attribution"] = "SUSE / NVD Security Hardening Guidance"
+        if not s.get("source_urls"):
+            s["source_urls"] = list(default_urls)
+        if "rollback" not in s:
+            rb = _derive_rollback(s.get("cmd", ""))
+            if rb:
+                s["rollback"] = rb
+    return suggestions
+
+
 def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: set, suse_intel: dict = None) -> dict:
     """Combine CISA KEV, Red Hat Security Data (CC BY 4.0), Ubuntu Tracker, NVD, and SUSE Bugzilla."""
     nvd_url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
@@ -938,7 +984,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         "suse_intel": suse_intel or {},
         "bugzilla": bugzilla_urls,
         "vendor_refs": vendor_refs[:5],
-        "suggestions": list({s["cmd"]: s for s in suggestions}.values()),
+        "suggestions": _enrich_suggestions_for_crisis(cve_id, list({s["cmd"]: s for s in suggestions}.values())),
         "workaround_disclaimer": 'Note: Workarounds are provided as-is without warranty and may not apply 1:1 to every environment. Service names, config paths (e.g., Tomcat, systemd, or wrapper layouts), and runtime flags can vary across SLES releases, SUSE Manager/Uyuni, or custom deployments—verify and adapt to your local setup before applying in production.',
         "sources": [
             "NVD API v2.0 (Public Domain)",
@@ -1757,6 +1803,8 @@ def _emit_salt_suggestion_states(
 
         lines.append(f"# [Due to {attr}] {raw_title}")
         lines.append(f"# Source / Verify: {' | '.join(urls)}")
+        if s.get("rollback"):
+            lines.append(f"# Rollback (post-patch): {s['rollback']}")
 
         if not cmd or cmd.startswith("#") or cmd.startswith("true"):
             lines.append("# Action: Manual review required (no automated command)")
@@ -2109,6 +2157,8 @@ def _emit_ansible_suggestion_tasks(
 
         lines.append(f"    # [Due to {attr}] {raw_title}")
         lines.append(f"    # Source / Verify: {' | '.join(urls)}")
+        if s.get("rollback"):
+            lines.append(f"    # Rollback (post-patch): {s['rollback']}")
 
         if not cmd or cmd.startswith("#") or cmd.startswith("true"):
             lines.append("    # Action: Manual review required (no automated command)")
@@ -2786,6 +2836,8 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
                 print(f"     {CLR_DIM}Source / Verify: {' | '.join(verify_urls)}{CLR_RESET}")
             for cln in str(s['cmd']).splitlines():
                 print(f"     {CLR_CYAN}$ {cln}{CLR_RESET}" if cln == str(s['cmd']).splitlines()[0] else f"       {CLR_CYAN}{cln}{CLR_RESET}")
+            if s.get("rollback"):
+                print(f"     {CLR_DIM}Rollback (post-patch): {s['rollback']}{CLR_RESET}")
         import textwrap
         disc_txt = mit.get("workaround_disclaimer") or 'Note: Workarounds are provided as-is without warranty and may not apply 1:1 to every environment. Service names, config paths (e.g., Tomcat, systemd, or wrapper layouts), and runtime flags can vary across SLES releases, SUSE Manager/Uyuni, or custom deployments—verify and adapt to your local setup before applying in production.'
         print(f"\n{CLR_DIM}{textwrap.fill(disc_txt, width=116, initial_indent='  ', subsequent_indent='  ')}{CLR_RESET}")
@@ -3091,6 +3143,30 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
             st_u = ur["status"].upper()
             flg = "--remediate" if ("PARTIALLY" in st_u and not ur["action"].startswith(("suse-cve ", "No Patch", "Patch "))) else "--mitigate"
             lines.append(f"- **`{ur['cve']}`** ({ur['status']} | {ur['severity']}): `suse-cve {rel_arg} {ur['cve']} {flg}`")
+
+        mit_sections = []
+        for ur in open_r:
+            it_obj = by_cve.get(ur["cve"], {})
+            mit_obj = it_obj.get("mitigation") or {}
+            sugs = mit_obj.get("suggestions") or []
+            if not sugs:
+                continue
+            mit_sections.append(f"### `{ur['cve']}` — Compensating Mitigations ({ur['severity']})")
+            mit_sections.append("")
+            for idx_s, sg in enumerate(sugs, 1):
+                attr = sg.get("source_attribution") or "SUSE / NVD Security Hardening Guidance"
+                urls = sg.get("source_urls") or [f"https://www.suse.com/security/cve/{ur['cve']}.html"]
+                mit_sections.append(f"{idx_s}. **[Due to {attr}]** {sg.get('title', '')}")
+                mit_sections.append(f"   - **Source / Verify:** {' | '.join(urls)}")
+                cmd_txt = str(sg.get("cmd", "")).strip()
+                if cmd_txt and not cmd_txt.startswith("#"):
+                    mit_sections.extend(["   ```bash", cmd_txt, "   ```"])
+                if sg.get("rollback"):
+                    mit_sections.append(f"   - **Rollback (post-patch):** `{sg['rollback']}`")
+            mit_sections.append("")
+        if mit_sections:
+            lines.extend(["", "## Compensating Mitigations & Hardening Details", ""])
+            lines.extend(mit_sections)
     if errors:
         lines.extend(["", "## Scan Errors", ""])
         for e in errors:
