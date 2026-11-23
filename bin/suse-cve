@@ -775,53 +775,60 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
             "title": "Disable unprivileged eBPF",
             "cmd": "sysctl -w kernel.unprivileged_bpf_disabled=1 && echo 'kernel.unprivileged_bpf_disabled = 1' >> /etc/sysctl.d/99-cve-mitigation.conf"
         })
-    if "overlayfs" in combined_intel or "ovl_" in combined_intel:
+    is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
+    is_sshd_pkg = any(p == "openssh" or p.startswith("openssh-") for p in affected_pkgs)
+
+    if is_kernel_pkg and ("overlayfs" in combined_intel or "ovl_" in combined_intel):
         suggestions.append({
             "title": "Restrict unprivileged user namespaces and OverlayFS mounts",
             "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'blacklist overlay' > /etc/modprobe.d/cve-mitigation.conf"
         })
-    if any(k in combined_intel for k in ("bluetooth", "bluez", "rfcomm", "hci_")):
+    if is_kernel_pkg and any(k in combined_intel for k in ("bluetooth", "bluez", "rfcomm", "hci_")):
         suggestions.append({
             "title": "Blacklist Bluetooth kernel modules on servers",
             "cmd": "printf 'install bluetooth /bin/true\\ninstall btusb /bin/true\\n' > /etc/modprobe.d/cve-bluetooth.conf"
         })
-    if "logingracetime" in combined_intel or "sshd" in combined_intel or "openssh" in combined_intel:
-        suggestions.append({
-            "title": "Set OpenSSH LoginGraceTime to 0 (mitigates pre-auth race conditions such as regreSSHion)",
-            "cmd": "echo 'LoginGraceTime 0' > /etc/ssh/sshd_config.d/99-cve-mitigation.conf && systemctl reload sshd"
-        })
-    for proto in ("tipc", "rds", "sctp", "dccp", "nfc"):
-        if re.search(rf"\b{proto}\b", combined_intel):
+    if is_sshd_pkg or "sshd" in combined_intel or "openssh" in combined_intel:
+        if any(k in combined_intel for k in ("logingracetime", "regresshion", "signal handler", "race condition")):
             suggestions.append({
-                "title": f"Blacklist uncommon network protocol '{proto}' via modprobe",
-                "cmd": f"echo 'install {proto} /bin/true' > /etc/modprobe.d/cve-{proto}.conf && modprobe -r {proto} 2>/dev/null || true"
+                "title": "Set OpenSSH LoginGraceTime to 0 (mitigates pre-auth race conditions such as regreSSHion)",
+                "cmd": "mkdir -p /etc/ssh/sshd_config.d && echo 'LoginGraceTime 0' > /etc/ssh/sshd_config.d/99-cve-mitigation.conf && sshd -t && systemctl reload sshd"
             })
-    if any(k in combined_intel for k in ("af_can", "can_raw", "can protocol", "controller area network")):
-        suggestions.append({
-            "title": "Blacklist CAN bus kernel module 'can' via modprobe",
-            "cmd": "echo 'install can /bin/true' > /etc/modprobe.d/cve-can.conf && modprobe -r can 2>/dev/null || true"
-        })
+        else:
+            suggestions.append({
+                "title": "Restrict SSH network exposure (firewalld / ListenAddress / AllowUsers) and disable unused SSH features until patched",
+                "cmd": "sshd -T | grep -E '^(port|listenaddress|permitrootlogin|allowusers|allowgroups|maxauthtries|allowtcpforwarding)'  # Restrict TCP/22 via firewalld to management IPs"
+            })
+    if is_kernel_pkg:
+        for proto in ("tipc", "rds", "sctp", "dccp", "nfc"):
+            if re.search(rf"\b{proto}\b", combined_intel):
+                suggestions.append({
+                    "title": f"Blacklist uncommon network protocol '{proto}' via modprobe",
+                    "cmd": f"echo 'install {proto} /bin/true' > /etc/modprobe.d/cve-{proto}.conf && modprobe -r {proto} 2>/dev/null || true"
+                })
+        if any(k in combined_intel for k in ("af_can", "can_raw", "can protocol", "controller area network")):
+            suggestions.append({
+                "title": "Blacklist CAN bus kernel module 'can' via modprobe",
+                "cmd": "echo 'install can /bin/true' > /etc/modprobe.d/cve-can.conf && modprobe -r can 2>/dev/null || true"
+            })
+        if any(k in combined_intel for k in ("use-after-free", "heap-based buffer overflow", "out-of-bounds", "privilege escalation", "user namespace")):
+            if not any("max_user_namespaces" in s["cmd"] for s in suggestions):
+                suggestions.append({
+                    "title": "Restrict unprivileged user namespaces (blocks common Linux LPE exploit chains)",
+                    "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
+                })
+        drv_matches = re.findall(r'(?:drivers|fs|net|sound)/[a-zA-Z0-9_/\-]+', description)
+        if drv_matches:
+            mod_hint = os.path.basename(drv_matches[0]).replace(".c", "")
+            suggestions.append({
+                "title": f"Inspect or blacklist affected kernel subsystem ({drv_matches[0]})",
+                "cmd": f"lsmod | grep -i '{mod_hint}'  # If unused: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
+            })
     if any(k in combined_intel for k in ("cifs", "smb3", "ksmbd", "nfsd")):
         suggestions.append({
             "title": "Restrict SMB/NFS ports on untrusted interfaces via firewalld",
             "cmd": "firewall-cmd --list-services  # Verify active samba/nfs services and restrict to trusted zones"
         })
-    if any(k in combined_intel for k in ("use-after-free", "heap-based buffer overflow", "out-of-bounds", "privilege escalation", "user namespace")):
-        if not any("max_user_namespaces" in s["cmd"] for s in suggestions):
-            suggestions.append({
-                "title": "Restrict unprivileged user namespaces (blocks common Linux LPE exploit chains)",
-                "cmd": "sysctl -w user.max_user_namespaces=0 && echo 'user.max_user_namespaces = 0' >> /etc/sysctl.d/99-cve-mitigation.conf"
-            })
-
-    drv_matches = re.findall(r'(?:drivers|fs|net|sound)/[a-zA-Z0-9_/\-]+', description)
-    if drv_matches:
-        mod_hint = os.path.basename(drv_matches[0]).replace(".c", "")
-        suggestions.append({
-            "title": f"Inspect or blacklist affected kernel subsystem ({drv_matches[0]})",
-            "cmd": f"lsmod | grep -i '{mod_hint}'  # If unused: echo 'install {mod_hint} /bin/true' > /etc/modprobe.d/cve-drv.conf"
-        })
-
-    is_kernel_pkg = any(p.startswith("kernel") or "-kmp-" in p for p in affected_pkgs)
     is_xen_pkg = any(p == "xen" or p.startswith("xen-") for p in affected_pkgs)
     is_qemu_pkg = any(p == "qemu" or p.startswith("qemu-") for p in affected_pkgs)
     is_java_pkg = any(p == "java" or p.startswith("java-") or "openjdk" in p or "graalvm" in p for p in affected_pkgs) or bool(re.search(r"\b(java se|openjdk|graalvm|hotspot)\b", combined_intel))
@@ -1963,6 +1970,22 @@ def _emit_salt_suggestion_states(
                 "          [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"",
                 "        done",
                 "        systemctl try-restart php-fpm apache2",
+                ""
+            ])
+            continue
+
+        # 4b. PHP session hardening INI drop-in
+        if "99-cve-session-hardening.ini" in cmd:
+            lines.extend([
+                f'    - name: "{task_prefix}[Due to {attr}] {raw_title[:110]}"',
+                "      ansible.builtin.shell: |",
+                "        set -euo pipefail",
+                "        for d in /etc/php*/*/conf.d /etc/php*/conf.d; do",
+                "          [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"",
+                "        done",
+                "        systemctl try-restart php-fpm apache2",
+                "      args:",
+                "        executable: /bin/bash",
                 ""
             ])
             continue
