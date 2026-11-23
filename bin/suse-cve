@@ -834,6 +834,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
     is_java_pkg = any(p == "java" or p.startswith("java-") or "openjdk" in p or "graalvm" in p for p in affected_pkgs) or bool(re.search(r"\b(java se|openjdk|graalvm|hotspot)\b", combined_intel))
     is_go_pkg = any(p.startswith("go1.") or p.startswith("golang-") or p in ("go", "go-doc", "go-race") for p in affected_pkgs)
     is_php_pkg = any(p == "php" or p.startswith("php7") or p.startswith("php8") for p in affected_pkgs) or bool(re.search(r"\bphp\b", combined_intel))
+    is_nginx_pkg = any(p == "nginx" or p.startswith("nginx-") for p in affected_pkgs) or bool(re.search(r"\bnginx\b", combined_intel))
     is_grub_pkg = any(p == "grub2" or p.startswith("grub2-") for p in affected_pkgs) or bool(re.search(r"\bgrub2?\b", combined_intel))
     is_cpu_sidechannel = any(k in combined_intel for k in ("transient execution", "l1d cache", "side-channel", "side channel", "speculative"))
 
@@ -916,6 +917,22 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
                 "title": "Verify active JVM flags on all running Java processes (Tomcat, Taskomatic, rhn-search)",
                 "cmd": "ps -ef | grep -E '[j]ava'  # Confirm mitigation flags are present in active JVM args (or check via jcmd <PID> VM.flags)"
             })
+        if is_nginx_pkg:
+            if any(k in combined_intel for k in ("http/2", "http2", "h2c", "flow control")):
+                suggestions.append({
+                    "title": "Disable HTTP/2 in NGINX ('http2 off;' / remove 'http2' from listen directives) and reload NGINX until patched",
+                    "cmd": "grep -rnE '^\\s*(listen\\s+.*http2|http2\\s+on)' /etc/nginx/ ; mkdir -p /etc/nginx/conf.d && printf 'http2 off;\\n' > /etc/nginx/conf.d/99-cve-disable-http2.conf && nginx -t && systemctl reload nginx",
+                    "rollback": "rm -f /etc/nginx/conf.d/99-cve-disable-http2.conf && nginx -t && systemctl reload nginx"
+                })
+                suggestions.append({
+                    "title": "Verify ASLR is active (kernel.randomize_va_space=2) to impede heap overflow RCE exploitation",
+                    "cmd": "sysctl -w kernel.randomize_va_space=2 && grep -q '^kernel.randomize_va_space' /etc/sysctl.d/99-cve-mitigation.conf 2>/dev/null || echo 'kernel.randomize_va_space = 2' >> /etc/sysctl.d/99-cve-mitigation.conf"
+                })
+            else:
+                suggestions.append({
+                    "title": "Audit NGINX modules, TLS/upstream exposure, and restrict administrative endpoints until patched RPM is installed",
+                    "cmd": "nginx -V 2>&1 && nginx -T 2>/dev/null | grep -E '^\\s*(listen|server_name|proxy_pass)'"
+                })
         if is_php_pkg:
             if any(k in combined_intel for k in ("session", "save_handler", "upload_progress", "unserialize")):
                 suggestions.append({
@@ -1961,6 +1978,40 @@ def _emit_salt_suggestion_states(
                 ])
                 state["emitted_tomcat"] = True
                 state["tomcat_dropin_id"] = tom_id
+            continue
+
+        # 4a. NGINX HTTP/2 disable drop-in
+        if "99-cve-disable-http2.conf" in cmd:
+            lines.extend([
+                f"{sid}_nginx_disable_http2:",
+                "  file.managed:",
+                "    - name: /etc/nginx/conf.d/99-cve-disable-http2.conf",
+                "    - contents: |",
+                "        http2 off;",
+                "    - mode: '0644'",
+                "    - makedirs: True",
+                f"{sid}_nginx_reload:",
+                "  cmd.run:",
+                "    - name: nginx -t && systemctl reload nginx",
+                "    - onchanges:",
+                f"      - file: {sid}_nginx_disable_http2",
+                ""
+            ])
+            continue
+
+        # 4a. NGINX HTTP/2 disable drop-in
+        if "99-cve-disable-http2.conf" in cmd:
+            lines.extend([
+                f'    - name: "{task_prefix}[Due to {attr}] Disable HTTP/2 via /etc/nginx/conf.d/99-cve-disable-http2.conf"',
+                "      ansible.builtin.copy:",
+                "        dest: /etc/nginx/conf.d/99-cve-disable-http2.conf",
+                "        content: |",
+                "          http2 off;",
+                "        mode: '0644'",
+                f'    - name: "{task_prefix}Validate NGINX config and reload"',
+                "      ansible.builtin.shell: nginx -t && systemctl reload nginx",
+                ""
+            ])
             continue
 
         # 4b. PHP session hardening INI drop-in
