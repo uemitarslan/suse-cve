@@ -839,7 +839,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
 
     if not affected_pkgs:
         suggestions = [{
-            "title": "No SLES packages affected (or advisory metadata unavailable/embargoed) -- no local workaround required",
+            "title": "No SLES packages affected -- no local workaround required",
             "cmd": "true  # Verify SUSE/NVD connectivity if CVE was just published"
         }]
     else:
