@@ -1852,7 +1852,7 @@ def _emit_salt_suggestion_states(
             lines.append(f"# {raw_title}")
             continue
 
-        lines.append(f"# [{attr}] {raw_title}")
+        lines.append(f"# [Due to {attr}] {raw_title}" if urls else f"# [{attr}] {raw_title}")
         if urls:
             lines.append(f"# Source / Verify: {' | '.join(urls)}")
         else:
@@ -2308,7 +2308,7 @@ def _emit_ansible_suggestion_tasks(
             lines.append(f"    # {raw_title}")
             continue
 
-        lines.append(f"    # [{attr}] {raw_title}")
+        lines.append(f"    # [Due to {attr}] {raw_title}" if urls else f"    # [{attr}] {raw_title}")
         if urls:
             lines.append(f"    # Source / Verify: {' | '.join(urls)}")
         else:
@@ -2989,10 +2989,11 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
                 print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
             else:
                 attr_label = attr or "Derived Heuristic (Advisory Attack-Vector Analysis)"
-                print(f"  {idx}. {CLR_MAG}[{attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
                 if urls:
+                    print(f"  {idx}. {CLR_MAG}[Due to {attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
                     print(f"     {CLR_DIM}Source / Verify: {' | '.join(urls)}{CLR_RESET}")
                 else:
+                    print(f"  {idx}. {CLR_MAG}[{attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
                     print(f"     {CLR_DIM}Basis: Derived from advisory attack-vector analysis (not a published SUSE workaround){CLR_RESET}")
             for cln in str(s['cmd']).splitlines():
                 print(f"     {CLR_CYAN}$ {cln}{CLR_RESET}" if cln == str(s['cmd']).splitlines()[0] else f"       {CLR_CYAN}{cln}{CLR_RESET}")
@@ -3331,7 +3332,7 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
             for idx_s, sg in enumerate(sugs, 1):
                 attr = sg.get("source_attribution") or "Derived Heuristic (Advisory Attack-Vector Analysis)"
                 urls = sg.get("source_urls") or []
-                mit_sections.append(f"{idx_s}. **[{attr}]** {sg.get('title', '')}")
+                mit_sections.append(f"{idx_s}. **[Due to {attr}]** {sg.get('title', '')}" if urls else f"{idx_s}. **[{attr}]** {sg.get('title', '')}")
                 if urls:
                     mit_sections.append(f"   - **Source / Verify:** {' | '.join(urls)}")
                 else:
