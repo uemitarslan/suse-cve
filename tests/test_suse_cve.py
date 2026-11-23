@@ -333,4 +333,12 @@ check(rc_ys == 0 and isinstance(ys_doc, dict) and len(ys_doc) >= 5, "Multi-CVE -
 rc_unaff, out_unaff, _ = run_cli("15sp7", "CVE-2099-99999", "--mitigate")
 check(rc_unaff == 0 and "IMMEDIATE_MITIGATE" not in out_unaff and "no local workaround required" in out_unaff, "Unaffected/embargoed CVE does not emit contradictory IMMEDIATE_MITIGATE crisis banner")
 
+rc_gc_a, out_gc_a, _ = run_cli("15sp7", "CVE-2025-22871,CVE-2024-21626", "--mitigate", "--ansible-config")
+gc_a_doc = _yaml.safe_load(out_gc_a) if rc_gc_a == 0 else None
+check(rc_gc_a == 0 and isinstance(gc_a_doc, list) and "{{" not in out_gc_a, "Go/Container --ansible-config produces valid YAML without unescaped Jinja2 '{{' collisions")
+
+rc_gc_s, out_gc_s, _ = run_cli("15sp7", "CVE-2025-22871,CVE-2024-21626", "--mitigate", "--salt-config")
+gc_s_doc = _yaml.safe_load(out_gc_s) if rc_gc_s == 0 else None
+check(rc_gc_s == 0 and isinstance(gc_s_doc, dict), "Go/Container --salt-config produces valid YAML parseable by PyYAML")
+
 print("\nALL 14 TEST SUITES PASSED.")

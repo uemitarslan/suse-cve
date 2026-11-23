@@ -985,7 +985,7 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
         if is_container_pkg:
             suggestions.append({
                 "title": "Audit running containers for privileged mode, host mounts, and enforce SELinux/AppArmor + no-new-privileges until runtime RPM is patched",
-                "cmd": "podman ps -a --format '{{.ID}} {{.Names}} {{.Image}} {{.Status}}' 2>/dev/null || true; aa-status 2>/dev/null || getenforce 2>/dev/null || true  # Block --privileged, hostPath mounts, and untrusted images"
+                "cmd": "podman ps -a 2>/dev/null || true; aa-status 2>/dev/null || getenforce 2>/dev/null || true  # Block --privileged, hostPath mounts, and untrusted images"
             })
         if is_go_pkg:
             if any(k in combined_intel for k in ("http/2", "http2", "net/http", "rapid reset")):
