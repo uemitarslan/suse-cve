@@ -632,8 +632,11 @@ def _enrich_suggestions_for_crisis(cve_id: str, suggestions: list) -> list:
     for s in suggestions:
         if not s.get("source_attribution"):
             s["source_attribution"] = "Derived Heuristic (Advisory Attack-Vector Analysis)"
-        if not s.get("source_urls"):
-            s["source_urls"] = list(default_urls)
+        if "source_urls" not in s:
+            if s["source_attribution"] == "Derived Heuristic (Advisory Attack-Vector Analysis)":
+                s["source_urls"] = []
+            else:
+                s["source_urls"] = list(default_urls)
         if "rollback" not in s:
             rb = _derive_rollback(s.get("cmd", ""))
             if rb:
@@ -1843,14 +1846,17 @@ def _emit_salt_suggestion_states(
         cmd = s.get("cmd", "").strip()
         raw_title = s.get("title", "").strip()
         attr = s.get("source_attribution") or "Derived Heuristic (Advisory Attack-Vector Analysis)"
-        urls = s.get("source_urls") or default_urls
+        urls = s.get("source_urls") if "source_urls" in s else ([] if "Derived Heuristic" in attr else default_urls)
 
         if "No SLES packages affected" in raw_title:
             lines.append(f"# {raw_title}")
             continue
 
-        lines.append(f"# [Due to {attr}] {raw_title}")
-        lines.append(f"# Source / Verify: {' | '.join(urls)}")
+        lines.append(f"# [{attr}] {raw_title}")
+        if urls:
+            lines.append(f"# Source / Verify: {' | '.join(urls)}")
+        else:
+            lines.append("# Basis: Derived from advisory attack-vector analysis (not published by SUSE)")
         if s.get("rollback"):
             lines.append(f"# Rollback (post-patch): {s['rollback']}")
 
@@ -2295,15 +2301,18 @@ def _emit_ansible_suggestion_tasks(
         raw_title = s.get("title", "").strip()
         title = raw_title.replace('"', '\\"')
         attr = s.get("source_attribution") or "Derived Heuristic (Advisory Attack-Vector Analysis)"
-        urls = s.get("source_urls") or default_urls
+        urls = s.get("source_urls") if "source_urls" in s else ([] if "Derived Heuristic" in attr else default_urls)
         cve_tag = f"[{cve}] " if prefix_cve else ""
 
         if "No SLES packages affected" in raw_title:
             lines.append(f"    # {raw_title}")
             continue
 
-        lines.append(f"    # [Due to {attr}] {raw_title}")
-        lines.append(f"    # Source / Verify: {' | '.join(urls)}")
+        lines.append(f"    # [{attr}] {raw_title}")
+        if urls:
+            lines.append(f"    # Source / Verify: {' | '.join(urls)}")
+        else:
+            lines.append("    # Basis: Derived from advisory attack-vector analysis (not published by SUSE)")
         if s.get("rollback"):
             lines.append(f"    # Rollback (post-patch): {s['rollback']}")
 
@@ -2980,9 +2989,11 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
                 print(f"  {idx}. {CLR_BOLD}{s['title']}{CLR_RESET}")
             else:
                 attr_label = attr or "Derived Heuristic (Advisory Attack-Vector Analysis)"
-                verify_urls = urls if urls else default_verify_urls
-                print(f"  {idx}. {CLR_MAG}[Due to {attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
-                print(f"     {CLR_DIM}Source / Verify: {' | '.join(verify_urls)}{CLR_RESET}")
+                print(f"  {idx}. {CLR_MAG}[{attr_label}]{CLR_RESET} {CLR_BOLD}{s['title']}{CLR_RESET}")
+                if urls:
+                    print(f"     {CLR_DIM}Source / Verify: {' | '.join(urls)}{CLR_RESET}")
+                else:
+                    print(f"     {CLR_DIM}Basis: Derived from advisory attack-vector analysis (not a published SUSE workaround){CLR_RESET}")
             for cln in str(s['cmd']).splitlines():
                 print(f"     {CLR_CYAN}$ {cln}{CLR_RESET}" if cln == str(s['cmd']).splitlines()[0] else f"       {CLR_CYAN}{cln}{CLR_RESET}")
             if s.get("rollback"):
@@ -3319,9 +3330,12 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
             mit_sections.append("")
             for idx_s, sg in enumerate(sugs, 1):
                 attr = sg.get("source_attribution") or "Derived Heuristic (Advisory Attack-Vector Analysis)"
-                urls = sg.get("source_urls") or [f"https://www.suse.com/security/cve/{ur['cve']}.html"]
-                mit_sections.append(f"{idx_s}. **[Due to {attr}]** {sg.get('title', '')}")
-                mit_sections.append(f"   - **Source / Verify:** {' | '.join(urls)}")
+                urls = sg.get("source_urls") or []
+                mit_sections.append(f"{idx_s}. **[{attr}]** {sg.get('title', '')}")
+                if urls:
+                    mit_sections.append(f"   - **Source / Verify:** {' | '.join(urls)}")
+                else:
+                    mit_sections.append("   - **Basis:** Derived from advisory attack-vector analysis (not published by SUSE)")
                 cmd_txt = str(sg.get("cmd", "")).strip()
                 if cmd_txt and not cmd_txt.startswith("#"):
                     mit_sections.extend(["   ```bash", cmd_txt, "   ```"])
