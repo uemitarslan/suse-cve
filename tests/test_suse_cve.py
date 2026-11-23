@@ -318,4 +318,19 @@ j_data = json.loads(out_cjson) if rc_cjson == 0 else {}
 j_sugs = (j_data.get("mitigation") or {}).get("suggestions") or []
 check(rc_cjson == 0 and any(s.get("source_attribution") and s.get("source_urls") and s.get("rollback") for s in j_sugs), "JSON output includes structured source_attribution, source_urls, and rollback fields on suggestions")
 
-print("\nALL 13 TEST SUITES PASSED.")
+
+
+print("\n=== 14. IAC YAML PARSER VALIDATION & UNAFFECTED/OFFLINE CONSISTENCY ===")
+import yaml as _yaml
+rc_ya, out_ya, _ = run_cli("15sp7", "CVE-2026-98432,CVE-2026-97876,CVE-2026-126714", "--mitigate", "--ansible-config")
+ya_doc = _yaml.safe_load(out_ya) if rc_ya == 0 else None
+check(rc_ya == 0 and isinstance(ya_doc, list) and len(ya_doc[0].get("tasks", [])) >= 6, "Multi-CVE --ansible-config produces 100% valid YAML parseable by PyYAML")
+
+rc_ys, out_ys, _ = run_cli("15sp7", "CVE-2026-98432,CVE-2026-97876,CVE-2026-126714", "--mitigate", "--salt-config")
+ys_doc = _yaml.safe_load(out_ys) if rc_ys == 0 else None
+check(rc_ys == 0 and isinstance(ys_doc, dict) and len(ys_doc) >= 5, "Multi-CVE --salt-config produces 100% valid YAML parseable by PyYAML")
+
+rc_unaff, out_unaff, _ = run_cli("15sp7", "CVE-2099-99999", "--mitigate")
+check(rc_unaff == 0 and "IMMEDIATE_MITIGATE" not in out_unaff and "no local workaround required" in out_unaff, "Unaffected/embargoed CVE does not emit contradictory IMMEDIATE_MITIGATE crisis banner")
+
+print("\nALL 14 TEST SUITES PASSED.")
