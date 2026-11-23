@@ -1999,21 +1999,6 @@ def _emit_salt_suggestion_states(
             ])
             continue
 
-        # 4a. NGINX HTTP/2 disable drop-in
-        if "99-cve-disable-http2.conf" in cmd:
-            lines.extend([
-                f'    - name: "{task_prefix}[Due to {attr}] Disable HTTP/2 via /etc/nginx/conf.d/99-cve-disable-http2.conf"',
-                "      ansible.builtin.copy:",
-                "        dest: /etc/nginx/conf.d/99-cve-disable-http2.conf",
-                "        content: |",
-                "          http2 off;",
-                "        mode: '0644'",
-                f'    - name: "{task_prefix}Validate NGINX config and reload"',
-                "      ansible.builtin.shell: nginx -t && systemctl reload nginx",
-                ""
-            ])
-            continue
-
         # 4b. PHP session hardening INI drop-in
         if "99-cve-session-hardening.ini" in cmd:
             lines.extend([
@@ -2056,6 +2041,40 @@ def _emit_salt_suggestion_states(
                 "        systemctl try-restart php-fpm apache2",
                 "      args:",
                 "        executable: /bin/bash",
+                ""
+            ])
+            continue
+
+        # 4a. NGINX HTTP/2 disable drop-in
+        if "99-cve-disable-http2.conf" in cmd:
+            lines.extend([
+                f'    - name: "{cve_tag}[{attr}] Disable HTTP/2 via /etc/nginx/conf.d/99-cve-disable-http2.conf"',
+                "      ansible.builtin.copy:",
+                "        dest: /etc/nginx/conf.d/99-cve-disable-http2.conf",
+                "        content: |",
+                "          http2 off;",
+                "        mode: '0644'",
+                "      when: ansible_facts['os_family'] == 'Suse'",
+                f'    - name: "{cve_tag}[{attr}] Validate NGINX configuration and reload"',
+                "      ansible.builtin.shell: nginx -t && systemctl reload nginx",
+                "      when: ansible_facts['os_family'] == 'Suse'",
+                ""
+            ])
+            continue
+
+        # 4b. PHP session hardening INI drop-in
+        if "99-cve-session-hardening.ini" in cmd:
+            lines.extend([
+                f'    - name: "{cve_tag}[{attr}] Disable PHP session.upload_progress and enforce strict mode"',
+                "      ansible.builtin.shell: |",
+                "        set -euo pipefail",
+                "        for d in /etc/php*/*/conf.d /etc/php*/conf.d; do",
+                "          [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"",
+                "        done",
+                "        systemctl try-restart php-fpm apache2",
+                "      args:",
+                "        executable: /bin/bash",
+                "      when: ansible_facts['os_family'] == 'Suse'",
                 ""
             ])
             continue
