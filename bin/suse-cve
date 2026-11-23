@@ -910,14 +910,30 @@ def generate_mitigation_report(cve_id: str, bugzilla_urls: list, affected_pkgs: 
                 "cmd": "ps -ef | grep -E '[j]ava'  # Confirm mitigation flags are present in active JVM args (or check via jcmd <PID> VM.flags)"
             })
         if is_php_pkg:
-            suggestions.append({
-                "title": "Disable stateful apache2-mod_php and isolate PHP via PHP-FPM with single-request worker recycling (blocks OOM/longjmp heap reuse)",
-                "cmd": "a2dismod php7; a2dismod php8; systemctl enable --now php-fpm && grep -q '^pm.max_requests' /etc/php*/fpm/pool.d/www.conf || echo 'pm.max_requests = 1' >> /etc/php8/fpm/pool.d/www.conf"
-            })
-            suggestions.append({
-                "title": "Tighten PHP memory_limit and request size caps to prevent attacker-controlled OOM triggers",
-                "cmd": "grep -E '^(memory_limit|post_max_size|max_input_vars)' /etc/php*/*/php.ini  # Lower memory_limit (e.g. 128M) & reload php-fpm/apache2"
-            })
+            if any(k in combined_intel for k in ("session", "save_handler", "upload_progress", "unserialize")):
+                suggestions.append({
+                    "title": "Disable PHP session.upload_progress and enforce session.use_strict_mode via INI drop-in (blocks attacker-controlled session payload injection)",
+                    "cmd": "for d in /etc/php*/*/conf.d /etc/php*/conf.d; do [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"; done && systemctl try-restart php-fpm apache2",
+                    "rollback": "for d in /etc/php*/*/conf.d /etc/php*/conf.d; do rm -f \"$d/99-cve-session-hardening.ini\"; done && systemctl try-restart php-fpm apache2"
+                })
+                suggestions.append({
+                    "title": "Switch session.save_handler away from 'files' to an atomic backend (redis/memcached/user DB handler) until patched PHP RPM is installed",
+                    "cmd": "php -i 2>/dev/null | grep -E '^(session\\.save_handler|session\\.upload_progress\\.enabled|session\\.use_strict_mode)' || true  # Avoid 'files' handler on untrusted/concurrent workloads"
+                })
+            elif any(k in combined_intel for k in ("oom", "out of memory", "memory_limit", "longjmp", "heap")):
+                suggestions.append({
+                    "title": "Isolate PHP via PHP-FPM with single-request worker recycling (blocks OOM/longjmp heap reuse)",
+                    "cmd": "systemctl is-active --quiet apache2 && a2dismod php8 2>/dev/null || true; systemctl enable --now php-fpm && for f in /etc/php*/fpm/pool.d/www.conf; do [ -f \"$f\" ] && (grep -q '^pm.max_requests' \"$f\" || echo 'pm.max_requests = 1' >> \"$f\"); done && systemctl try-restart php-fpm apache2"
+                })
+                suggestions.append({
+                    "title": "Tighten PHP memory_limit and request size caps to prevent attacker-controlled OOM triggers",
+                    "cmd": "grep -E '^(memory_limit|post_max_size|max_input_vars)' /etc/php*/*/php.ini  # Lower memory_limit (e.g. 128M) & reload php-fpm/apache2"
+                })
+            else:
+                suggestions.append({
+                    "title": "Audit active PHP SAPI, loaded extensions, and disable unused risky functions/modules until vendor patch is installed",
+                    "cmd": "php -v && php -m  # Review loaded extensions & disable_functions in /etc/php*/*/php.ini before reloading php-fpm/apache2"
+                })
 
         # Extract explicit vendor workaround sentences from NVD description when present
         if description:
@@ -1935,6 +1951,36 @@ def _emit_salt_suggestion_states(
                 ])
                 state["emitted_tomcat"] = True
                 state["tomcat_dropin_id"] = tom_id
+            continue
+
+        # 4b. PHP session hardening INI drop-in
+        if "99-cve-session-hardening.ini" in cmd:
+            lines.extend([
+                f"{sid}_php_session_hardening:",
+                "  cmd.run:",
+                "    - name: |",
+                "        for d in /etc/php*/*/conf.d /etc/php*/conf.d; do",
+                "          [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"",
+                "        done",
+                "        systemctl try-restart php-fpm apache2",
+                ""
+            ])
+            continue
+
+        # 4b. PHP session hardening INI drop-in
+        if "99-cve-session-hardening.ini" in cmd:
+            lines.extend([
+                f'    - name: "{task_prefix}[Due to {attr}] {raw_title[:110]}"',
+                "      ansible.builtin.shell: |",
+                "        set -euo pipefail",
+                "        for d in /etc/php*/*/conf.d /etc/php*/conf.d; do",
+                "          [ -d \"$d\" ] && printf 'session.upload_progress.enabled = Off\\nsession.use_strict_mode = 1\\n' > \"$d/99-cve-session-hardening.ini\"",
+                "        done",
+                "        systemctl try-restart php-fpm apache2",
+                "      args:",
+                "        executable: /bin/bash",
+                ""
+            ])
             continue
 
         # 5. OpenSSH LoginGraceTime drop-in
