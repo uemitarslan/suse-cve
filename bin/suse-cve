@@ -1457,12 +1457,24 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         sll_prod_label = f"SUSE Liberty Linux {sll_ver}"
         rh_check = fetch_redhat_intel(cve)
         rh_rel_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(sll_ver)}\b", re.IGNORECASE)
+        def _fmt_rh_pkg(raw_p: str) -> str:
+            if not raw_p:
+                return ""
+            m_mod = re.match(r'^([a-zA-Z0-9_.\-]+:[0-9.]+)-(\d)(\d{2})\d{2}\d{14}', raw_p)
+            if m_mod:
+                return f"{m_mod.group(1)} (RHEL {m_mod.group(2)}.{int(m_mod.group(3))})"
+            base = clean_pkg_name(raw_p)
+            m_el = re.search(r'\.el(\d+)_(\d+)', raw_p)
+            if m_el:
+                return f"{base} (BaseOS, RHEL {m_el.group(1)}.{m_el.group(2)})"
+            return base
+
         for ar in rh_check.get("affected_release", []):
             prod_name = ar.get("product_name", "")
             if rh_rel_re.search(prod_name):
                 adv = ar.get("advisory", "").strip()
                 pkg_raw = ar.get("package", "").strip()
-                p_norm = re.sub(r"-\d{5,}.*$", "", clean_pkg_name(pkg_raw)) if pkg_raw else ""
+                p_norm = _fmt_rh_pkg(pkg_raw)
                 rh_sll_upstream.append({
                     "state": "RELEASED_UPSTREAM",
                     "product": prod_name,
@@ -1471,6 +1483,10 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     "pkg_norm": p_norm,
                     "release_date": (ar.get("release_date") or "")[:10]
                 })
+                if adv:
+                    rh_errata_url = f"https://access.redhat.com/errata/{adv}"
+                    if rh_errata_url not in bugzilla_urls:
+                        bugzilla_urls.append(rh_errata_url)
                 if p_norm and sll_prod_label not in raw_status_map.get("RELEASED", {}):
                     raw_status_map.setdefault("IN PROGRESS", {}).setdefault(f"{sll_prod_label} (Upstream {adv} - Pending SCC Sync)", set()).add(p_norm)
         for ps in rh_check.get("package_state", []):
@@ -1507,6 +1523,17 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     target_vuln_pkgs.update(pkgs_v)
                     if st_k != "RELEASED":
                         open_pkgs.update(pkgs_v)
+        if major.startswith("SLL") or any("Liberty Linux" in k for k in web_all_prods):
+            rh_cve_url = f"https://access.redhat.com/security/cve/{cve}"
+            if rh_cve_url not in bugzilla_urls:
+                bugzilla_urls.append(rh_cve_url)
+            for p_list in patch_map.values():
+                for p_item in p_list:
+                    pid = (p_item.get("patch", "") if isinstance(p_item, dict) else str(p_item).split(" (")[0]).strip()
+                    if pid.startswith("RHSA-"):
+                        u_rh = f"https://access.redhat.com/errata/{pid}"
+                        if u_rh not in bugzilla_urls:
+                            bugzilla_urls.append(u_rh)
         mitigation_data = generate_mitigation_report(cve, bugzilla_urls, target_vuln_pkgs, suse_intel_meta)
         target_has_released = any(
             (major == "ALL" or sp_regex.search(p_k))
@@ -1520,7 +1547,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                         pid = (p_item.get("patch", "") if isinstance(p_item, dict) else str(p_item).split(" (")[0]).strip()
                         if pid and pid not in matched_patch_ids:
                             matched_patch_ids.append(pid)
-            if major != "ALL" and "ltss" not in rel_arg.lower() and "espos" not in rel_arg.lower():
+            if major == "ALL":
                 non_ltss = [pid for pid in matched_patch_ids if not any(tag in pid.upper() for tag in ("-LTSS-", "-ESPOS-", "-TERADATA-"))]
                 if non_ltss:
                     matched_patch_ids = non_ltss
@@ -1886,6 +1913,30 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
         print(f"  {c_aff_b}[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.{CLR_RESET}")
+    sll_released_vers = sorted({
+        m.group(1)
+        for p in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys())
+        for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
+        if m
+    })
+    sll_any_vers = sorted({
+        m.group(1)
+        for p in web_all_prods
+        for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
+        if m
+    })
+    if sll_released_vers and "9" not in sll_any_vers and (major in ("ALL", "SLL9")):
+        released_str = ", ".join(f"SLL {v}" for v in sll_released_vers)
+        up_advs = sorted({x["advisory"] for x in rh_sll_upstream if x.get("advisory")})
+        if not up_advs and major == "ALL":
+            rh_all_chk = fetch_redhat_intel(cve)
+            up_advs = sorted({
+                ar.get("advisory", "").strip()
+                for ar in rh_all_chk.get("affected_release", [])
+                if "Enterprise Linux 9" in ar.get("product_name", "") and ar.get("advisory")
+            })
+        up_hint = f" while Red Hat already released {', '.join(up_advs[:4])}" if up_advs else ""
+        print(f"  {CLR_WARN}[!] SLL GAP / INCONSISTENCY :{CLR_RESET} SUSE published patches for {CLR_BOLD}{released_str}{CLR_RESET}, but {c_aff_b}SLL 9 is completely missing{CLR_RESET} on SUSE CVE page{up_hint} — check SCC sync / SUSE Maintenance!")
     elif not has_released and (has_unpatched or has_in_progress or has_qa) and not with_mitigation:
         print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
