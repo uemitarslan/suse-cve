@@ -64,6 +64,7 @@ if USE_COLOR:
         "RELEASED": {"header": "\033[1;32m", "pkg": "\033[32m"},
         "IN QA": {"header": "\033[1;33m", "pkg": "\033[33m"},
         "IN PROGRESS": {"header": CLR_CYAN, "pkg": CLR_CYAN},
+        "UPSTREAM ONLY": {"header": CLR_WARN, "pkg": CLR_WARN},
         "AFFECTED": {"header": "\033[1;31m", "pkg": "\033[31m"},
         "NOT AFFECTED": {"header": "\033[1;36m", "pkg": "\033[36m"},
         "WONT FIX": {"header": "\033[1;34m", "pkg": "\033[34m"},
@@ -1488,7 +1489,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     if rh_errata_url not in bugzilla_urls:
                         bugzilla_urls.append(rh_errata_url)
                 if p_norm and sll_prod_label not in raw_status_map.get("RELEASED", {}):
-                    raw_status_map.setdefault("IN PROGRESS", {}).setdefault(f"{sll_prod_label} (Upstream {adv} - Pending SCC Sync)", set()).add(p_norm)
+                    raw_status_map.setdefault("UPSTREAM ONLY", {}).setdefault(f"{sll_prod_label} (Not listed by SUSE | Upstream Red Hat: {adv})", set()).add(p_norm)
         for ps in rh_check.get("package_state", []):
             prod_name = ps.get("product_name", "")
             if rh_rel_re.search(prod_name):
@@ -1662,6 +1663,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         triage_status = "IN QA (Patches in testing — mitigation recommended until release)"
     elif has_in_progress:
         triage_status = "IN PROGRESS (SUSE engineering actively building fix — mitigation recommended)"
+    elif raw_status_map.get("UPSTREAM ONLY"):
+        triage_status = "UNLISTED BY SUSE / UPSTREAM PATCHED (Red Hat released RHSA; no SUSE Liberty Linux advisory published yet)"
     elif has_unpatched:
         triage_status = "UNPATCHED (No patches released yet — mitigation required)"
     else:
@@ -1830,7 +1833,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             sys.exit(1)
 
     else:
-        for st in ["RELEASED", "IN QA", "IN PROGRESS", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
+        for st in ["RELEASED", "IN QA", "IN PROGRESS", "UPSTREAM ONLY", "AFFECTED", "NOT AFFECTED", "WONT FIX"]:
             if st in raw_status_map and raw_status_map[st]:
                 filtered_st = {
                     p: sorted(list(pkgs))
@@ -1941,7 +1944,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 if "Enterprise Linux 9" in ar.get("product_name", "") and ar.get("advisory")
             })
         up_hint = f" while Red Hat already released {', '.join(up_advs[:4])}" if up_advs else ""
-        print(f"  {CLR_WARN}[!] SLL GAP / INCONSISTENCY :{CLR_RESET} SUSE published patches for {CLR_BOLD}{released_str}{CLR_RESET}, but {c_aff_b}SLL 9 is completely missing{CLR_RESET} on SUSE CVE page{up_hint} — check SCC sync / SUSE Maintenance!")
+        print(f"  {CLR_WARN}[!] SLL GAP / INCONSISTENCY :{CLR_RESET} SUSE published patches for {CLR_BOLD}{released_str}{CLR_RESET}, but {c_aff_b}SLL 9 is completely missing{CLR_RESET} on SUSE CVE page{up_hint} (no SUSE Liberty Linux 9 entry published yet).")
     elif not has_released and (has_unpatched or has_in_progress or has_qa) and not with_mitigation:
         print(f"  {CLR_WARN}Recommended Next Step      :{CLR_RESET} Run with {CLR_CYAN}--mitigate{CLR_RESET} for immediate workarounds & advisory intel")
     print()
