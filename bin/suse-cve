@@ -344,12 +344,57 @@ def fetch_web_data(cve_id: str, platform_regex):
     m_rt = re.search(r"rated as having\s*<a[^>]*>([^<]+)</a>\s*severity", html, re.IGNORECASE)
     if m_rt:
         suse_intel["rating"] = m_rt.group(1).strip().upper()
-    m_v3 = re.search(r"CVSS v3 Scores.*?<td>Base Score</td>\s*<td>[^<]*</td>\s*<td>([^<]+)</td>\s*</tr>\s*<tr><td>Vector</td>\s*<td>[^<]*</td>\s*<td>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
-    if m_v3:
-        suse_intel["cvss3"] = f"{m_v3.group(1).strip()} ({m_v3.group(2).strip()})"
-    m_v4 = re.search(r"CVSS v4 Scores.*?<td>Base Score</td>\s*<td>([^<]+)</td>\s*</tr>\s*<tr><td>Vector</td>\s*<td>([^<]+)</td>", html, re.DOTALL | re.IGNORECASE)
-    if m_v4:
-        v4_vec = re.sub(r"(?:/[A-Z]+:X)+$", "", m_v4.group(2).strip()); suse_intel["cvss4"] = f"{m_v4.group(1).strip()} ({v4_vec})"
+    m_v3_tbl = re.search(r"CVSS v3 Scores.*?<table[^>]*>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
+    if m_v3_tbl:
+        tbl3 = m_v3_tbl.group(1)
+        hdr3 = [re.sub(r"<[^>]+>", "", h).strip() for h in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tbl3.split("</tr>")[0], re.DOTALL | re.IGNORECASE)]
+        m_bs3 = re.search(r"<tr>\s*<t[hd][^>]*>\s*Base Score\s*</t[hd]>(.*?)</tr>", tbl3, re.DOTALL | re.IGNORECASE)
+        m_vc3 = re.search(r"<tr>\s*<t[hd][^>]*>\s*Vector\s*</t[hd]>(.*?)</tr>", tbl3, re.DOTALL | re.IGNORECASE)
+        bs3_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", m_bs3.group(1), re.DOTALL | re.IGNORECASE)] if m_bs3 else []
+        vc3_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", m_vc3.group(1), re.DOTALL | re.IGNORECASE)] if m_vc3 else []
+        for idx_c, col_lbl in enumerate(hdr3[1:]):
+            val_s = bs3_cells[idx_c] if idx_c < len(bs3_cells) else ""
+            val_v = vc3_cells[idx_c] if idx_c < len(vc3_cells) else ""
+            if not val_s or val_s == "-":
+                continue
+            if col_lbl.upper() == "SUSE":
+                suse_intel["suse_cvss3"] = f"{val_s} ({val_v})" if val_v else val_s
+                suse_intel["suse_base_score"] = val_s
+                suse_intel["suse_cvss_ver"] = "v3"
+            else:
+                suse_intel["cna_cvss3"] = f"{val_s} ({val_v})" if val_v else val_s
+                suse_intel["cna_label"] = col_lbl
+                suse_intel["cna_base_score"] = val_s
+                suse_intel["cna_cvss_ver"] = "v3"
+                suse_intel["cvss3"] = suse_intel["cna_cvss3"]
+        if "cvss3" not in suse_intel and "suse_cvss3" in suse_intel:
+            suse_intel["cvss3"] = suse_intel["suse_cvss3"]
+
+    m_v4_tbl = re.search(r"CVSS v4 Scores.*?<table[^>]*>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
+    if m_v4_tbl:
+        tbl4 = m_v4_tbl.group(1)
+        hdr4 = [re.sub(r"<[^>]+>", "", h).strip() for h in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tbl4.split("</tr>")[0], re.DOTALL | re.IGNORECASE)]
+        m_bs4 = re.search(r"<tr>\s*<t[hd][^>]*>\s*Base Score\s*</t[hd]>(.*?)</tr>", tbl4, re.DOTALL | re.IGNORECASE)
+        m_vc4 = re.search(r"<tr>\s*<t[hd][^>]*>\s*Vector\s*</t[hd]>(.*?)</tr>", tbl4, re.DOTALL | re.IGNORECASE)
+        bs4_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", m_bs4.group(1), re.DOTALL | re.IGNORECASE)] if m_bs4 else []
+        vc4_cells = [re.sub(r"<[^>]+>", "", c).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", m_vc4.group(1), re.DOTALL | re.IGNORECASE)] if m_vc4 else []
+        for idx_c, col_lbl in enumerate(hdr4[1:]):
+            val_s = bs4_cells[idx_c] if idx_c < len(bs4_cells) else ""
+            val_v = re.sub(r"(?:/[A-Z]+:X)+$", "", vc4_cells[idx_c]) if idx_c < len(vc4_cells) else ""
+            if not val_s or val_s == "-":
+                continue
+            if col_lbl.upper() == "SUSE":
+                suse_intel["suse_cvss4"] = f"{val_s} ({val_v})" if val_v else val_s
+                suse_intel["suse_base_score"] = val_s
+                suse_intel["suse_cvss_ver"] = "v4"
+            else:
+                suse_intel["cna_cvss4"] = f"{val_s} ({val_v})" if val_v else val_s
+                suse_intel["cna_label"] = col_lbl
+                suse_intel["cna_base_score"] = val_s
+                suse_intel["cna_cvss_ver"] = "v4"
+                suse_intel["cvss4"] = suse_intel["cna_cvss4"]
+        if "cvss4" not in suse_intel and "suse_cvss4" in suse_intel:
+            suse_intel["cvss4"] = suse_intel["suse_cvss4"]
     web_map["_SUSE_INTEL"] = suse_intel
     web_map["_ALL_ACTIVE_PRODS"] = web_all_active_prods
     return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, True
@@ -1770,6 +1815,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     not_affected_releases_list = _compact_release_tags(rel_not_aff_tags - set(affected_releases) - rel_released_tags - rel_open_tags)
 
     meta_payload = {
+        "suse_intel": web_map.get("_SUSE_INTEL", {}),
         "oval_timestamp": oval_ts_str,
         "web_last_modified": web_ts_str,
         "stale_warning": is_stale,
@@ -3594,7 +3640,250 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
     ])
     return "\n".join(lines)
 
-def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
+def render_compact_os_matrix(results: list, errors: list = None):
+    """Render a compact 1-line-per-OS-release matrix with SUSE vs CNA/NVD scores, patch IDs, package counts, lifecycle, and links."""
+    def _norm_os(prod: str) -> str:
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", prod, re.IGNORECASE)
+        if m_mic:
+            return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
+        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", prod, re.IGNORECASE)
+        if m_sll:
+            return f"SLL {m_sll.group(1)}"
+        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", prod, re.IGNORECASE)
+        if m_sle:
+            maj, sp = m_sle.group(1), m_sle.group(2)
+            if maj == "16":
+                return f"SLES 16.{sp if sp else '0'}"
+            return f"SLES {maj} SP{sp}" if sp else f"SLES {maj}"
+        return prod
+
+    def _os_sort_key(os_name: str):
+        if os_name.startswith("SLES 12"):
+            m = re.search(r"SP(\d+)", os_name)
+            return (0, int(m.group(1)) if m else 0, os_name)
+        if os_name.startswith("SLES 15"):
+            m = re.search(r"SP(\d+)", os_name)
+            return (1, int(m.group(1)) if m else -1, os_name)
+        if os_name.startswith("SLES 16"):
+            m = re.search(r"16\.(\d+)", os_name)
+            return (2, int(m.group(1)) if m else 0, os_name)
+        if os_name.startswith("SL Micro"):
+            return (3, 0, os_name)
+        if os_name.startswith("SLL "):
+            m = re.search(r"SLL\s+(\d+)", os_name)
+            return (4, int(m.group(1)) if m else 0, os_name)
+        return (5, 0, os_name)
+
+    def _os_lifecycle(os_name: str) -> str:
+        if os_name.startswith("SLES 12"):
+            return "LTSS" if "SP5" in os_name else "EOL"
+        if os_name == "SLES 15" or any(os_name == f"SLES 15 SP{x}" for x in (1, 2, 3)):
+            return "EOL"
+        if any(os_name == f"SLES 15 SP{x}" for x in (4, 5, 6)):
+            return "LTSS Required"
+        if os_name == "SLL 7":
+            return "EOL"
+        return "General Support"
+
+    matrix_rows = []
+    link_blocks = []
+
+    for item in results:
+        cve_id = item.get("cve", "")
+        meta = item.get("meta") or {}
+        mit = item.get("mitigation") or {}
+        si = meta.get("suse_intel") or {}
+        nvd = mit.get("nvd") or {}
+
+        suse_rt = (si.get("rating") or mit.get("suse_rating") or "").upper()
+        suse_bs = si.get("suse_base_score") or ""
+        if suse_rt and suse_bs:
+            suse_score_col = f"{suse_rt} {suse_bs}"
+        elif suse_rt:
+            suse_score_col = suse_rt
+        elif suse_bs:
+            suse_score_col = f"SUSE {suse_bs}"
+        else:
+            suse_score_col = "—"
+
+        cna_bs = si.get("cna_base_score") or ""
+        cna_lbl = si.get("cna_label") or ""
+        cna_ver = si.get("cna_cvss_ver") or ""
+        if cna_bs:
+            tag_cna = f"{cna_lbl} {cna_ver}".strip() if cna_lbl else (f"NVD {cna_ver}".strip() if cna_ver else "CNA/NVD")
+            cna_score_col = f"{cna_bs} ({tag_cna})"
+        elif nvd.get("score"):
+            cna_score_col = f"{nvd['score']} (NVD)"
+        else:
+            cna_score_col = "—"
+
+        res_map = item.get("results") or {}
+        patch_map = item.get("patches") or {}
+
+        os_buckets = {}
+        def _ensure_os(oname):
+            return os_buckets.setdefault(oname, {
+                "rel_pkgs": set(),
+                "qa_pkgs": set(),
+                "open_pkgs": set(),
+                "upstream_streams": set(),
+                "na_seen": False,
+                "patches": [],
+            })
+
+        for st_key, prod_dict in res_map.items():
+            for prod, pkgs in prod_dict.items():
+                oname = _norm_os(prod)
+                b = _ensure_os(oname)
+                if st_key == "RELEASED":
+                    b["rel_pkgs"].update(pkgs)
+                elif st_key == "IN QA":
+                    b["qa_pkgs"].update(pkgs)
+                elif st_key in ("AFFECTED", "IN PROGRESS"):
+                    b["open_pkgs"].update(pkgs)
+                elif st_key == "UPSTREAM ONLY":
+                    b["upstream_streams"].update(pkgs)
+                    m_rh = re.search(r"Upstream Red Hat:\s*(RHSA-\d{4}:\d+)", prod)
+                    if m_rh and m_rh.group(1) not in b["patches"]:
+                        b["patches"].append(m_rh.group(1))
+                elif st_key == "NOT AFFECTED":
+                    b["na_seen"] = True
+
+        for prod, plist in patch_map.items():
+            oname = _norm_os(prod)
+            b = _ensure_os(oname)
+            for p_obj in plist:
+                pid = p_obj.get("patch", "")
+                if pid and pid not in b["patches"]:
+                    b["patches"].append(pid)
+
+        if not os_buckets:
+            matrix_rows.append({
+                "cve": cve_id,
+                "suse_score": suse_score_col,
+                "cna_score": cna_score_col,
+                "os": item.get("release", "ALL"),
+                "status": "NOT AFFECTED",
+                "patches": "—",
+                "pkgs": "0 / 0",
+                "action": "No action required",
+            })
+
+        for oname in sorted(os_buckets.keys(), key=_os_sort_key):
+            b = os_buckets[oname]
+            rel_n = len(b["rel_pkgs"])
+            qa_n = len(b["qa_pkgs"])
+            open_n = len(b["open_pkgs"] - b["rel_pkgs"])
+            up_n = len(b["upstream_streams"])
+
+            if rel_n > 0 and open_n > 0:
+                st_label = "PARTIAL"
+            elif rel_n > 0:
+                st_label = "RELEASED"
+            elif qa_n > 0:
+                st_label = "IN QA"
+            elif up_n > 0 and open_n == 0:
+                st_label = "UPSTREAM ONLY"
+            elif open_n > 0:
+                st_label = "AFFECTED"
+            elif b["na_seen"]:
+                st_label = "NOT AFFECTED"
+            else:
+                st_label = "AFFECTED"
+
+            if st_label == "NOT AFFECTED" and len(os_buckets) > 4:
+                continue
+
+            pids = sorted(b["patches"])
+            if st_label == "UPSTREAM ONLY" and pids:
+                patch_col = f"Upstream: {pids[0]}" + (f" (+{len(pids)-1})" if len(pids) > 1 else "")
+            elif pids:
+                if len(pids) <= 2 and sum(len(x) for x in pids) <= 44:
+                    patch_col = ", ".join(pids)
+                else:
+                    patch_col = f"{pids[0]} (+{len(pids)-1})"
+            else:
+                patch_col = "—"
+
+            if st_label == "UPSTREAM ONLY":
+                pkgs_col = f"0 / {up_n} streams"
+            elif qa_n > 0 and rel_n == 0:
+                pkgs_col = f"0 / {qa_n} (in QA)"
+            else:
+                pkgs_col = f"{rel_n} / {open_n}"
+
+            lc = _os_lifecycle(oname)
+            if st_label in ("RELEASED", "PARTIAL"):
+                pkg_mgr = "dnf update" if oname.startswith("SLL") else "zypper patch"
+                act_col = f"{lc} -> {pkg_mgr}"
+            elif st_label == "NOT AFFECTED":
+                act_col = f"{lc} (Not Affected)"
+            else:
+                act_col = f"{lc} -> --mitigate"
+
+            matrix_rows.append({
+                "cve": cve_id,
+                "suse_score": suse_score_col,
+                "cna_score": cna_score_col,
+                "os": oname,
+                "status": st_label,
+                "patches": patch_col,
+                "pkgs": pkgs_col,
+                "action": act_col,
+            })
+
+        bz_list = mit.get("bugzilla") or []
+        pure_bz = [u for u in bz_list if "bugzilla.suse.com" in u]
+        sll_mail = [u for u in bz_list if "lists.suse.com" in u]
+        link_blocks.append((cve_id, pure_bz, sll_mail))
+
+    if results:
+        m0 = results[0].get("meta") or {}
+        print(f"{CLR_DIM}[SYNC] OVAL: {m0.get('oval_timestamp', 'N/A')} | WEB: {m0.get('web_last_modified', 'N/A')}{CLR_RESET}\n")
+
+    w_cve = max([len("CVE ID")] + [len(r["cve"]) for r in matrix_rows])
+    w_ss = max([len("SUSE SCORE")] + [len(r["suse_score"]) for r in matrix_rows])
+    w_cs = max([len("CNA / NVD")] + [len(r["cna_score"]) for r in matrix_rows])
+    w_os = max([len("OS / RELEASE")] + [len(r["os"]) for r in matrix_rows])
+    w_st = max([len("STATUS")] + [len(r["status"]) for r in matrix_rows])
+    w_pa = max([len("PATCH IDs")] + [len(r["patches"]) for r in matrix_rows])
+    w_pk = max([len("PKGS (REL/OPEN)")] + [len(r["pkgs"]) for r in matrix_rows])
+
+    hdr = f"  {'CVE ID':<{w_cve}}  {'SUSE SCORE':<{w_ss}}  {'CNA / NVD':<{w_cs}}  {'OS / RELEASE':<{w_os}}  {'STATUS':<{w_st}}  {'PATCH IDs':<{w_pa}}  {'PKGS (REL/OPEN)':<{w_pk}}  LIFECYCLE / ACTION"
+    print(f"{CLR_BOLD}{hdr}{CLR_RESET}")
+    print("  " + "-" * (len(hdr) - 2))
+
+    last_cve = None
+    for r in matrix_rows:
+        if last_cve and r["cve"] != last_cve:
+            print("  " + "-" * (len(hdr) - 2))
+        last_cve = r["cve"]
+        st_u = r["status"]
+        if st_u in ("RELEASED", "NOT AFFECTED"):
+            st_col = CLR_CYAN
+        elif st_u in ("PARTIAL", "IN QA"):
+            st_col = CLR_MAG
+        else:
+            st_col = CLR_WARN
+        print(f"  {r['cve']:<{w_cve}}  {r['suse_score']:<{w_ss}}  {r['cna_score']:<{w_cs}}  {CLR_BOLD}{r['os']:<{w_os}}{CLR_RESET}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['patches']:<{w_pa}}  {r['pkgs']:<{w_pk}}  {r['action']}")
+
+    print("  " + "-" * (len(hdr) - 2))
+    for cve_id, pure_bz, sll_mail in link_blocks:
+        if not cve_id:
+            continue
+        print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
+        print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
+        print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
+        if pure_bz:
+            print(f"    Bugzilla   : {' | '.join(pure_bz)}")
+        if sll_mail:
+            print(f"    SLL Mailer : {' | '.join(sll_mail)}")
+    if errors:
+        print(f"\n  {CLR_WARN}Errors:{CLR_RESET} {', '.join(e['cve'] + ': ' + e['error'] for e in errors)}")
+    print()
+
+
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
     """Parallel batch orchestrator executing up to 8 concurrent CVE queries while preserving deterministic input order."""
     import io
 
@@ -3720,6 +4009,10 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
         print(render_batch_markdown_report(rel_arg, summary, rows, filtered_results, errors, status_filter=status_filter, only_open=only_open, only_kev=only_kev))
         sys.exit(0 if results else 1)
 
+    if as_compact:
+        render_compact_os_matrix(filtered_results, errors=errors)
+        sys.exit(0 if results else 1)
+
     if config_mode == "salt":
         print(render_batch_salt_config(rel_arg, filtered_results, force_workaround=force_workaround))
         sys.exit(0 if results else 1)
@@ -3825,6 +4118,9 @@ if __name__ == "__main__":
     as_table = any(a in ("--table", "-t") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--table", "-t")]
 
+    as_compact = any(a in ("--compact", "-c") for a in raw_args)
+    raw_args = [a for a in raw_args if a not in ("--compact", "-c")]
+
     with_remediation = False
     for flag in ("--remediate", "--fix"):
         if flag in raw_args:
@@ -3880,7 +4176,7 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
@@ -3922,7 +4218,7 @@ if __name__ == "__main__":
             else:
                 cve_tokens.append(extra)
         batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
-        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
     else:
         first_cve_tok = raw_args[1]
         extra_tokens = raw_args[2:]
@@ -3931,9 +4227,9 @@ if __name__ == "__main__":
             if t.lower() in known_filters and filter_arg is None:
                 filter_arg = t
         try:
-            if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or only_open or only_kev or as_csv or as_markdown:
+            if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or as_compact or only_open or only_kev or as_csv or as_markdown:
                 batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
+                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
             else:
                 query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
             sys.stdout.flush()
