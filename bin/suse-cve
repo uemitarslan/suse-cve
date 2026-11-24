@@ -1815,7 +1815,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     not_affected_releases_list = _compact_release_tags(rel_not_aff_tags - set(affected_releases) - rel_released_tags - rel_open_tags)
 
     meta_payload = {
-        "suse_intel": web_map.get("_SUSE_INTEL", {}),
+        "suse_intel": suse_intel_meta,
         "oval_timestamp": oval_ts_str,
         "web_last_modified": web_ts_str,
         "stale_warning": is_stale,
