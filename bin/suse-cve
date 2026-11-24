@@ -37,6 +37,14 @@ OVAL_URLS = [
     "https://security-data.suse.com/oval/suse.liberty.linux.8-affected.xml.bz2",
     "https://security-data.suse.com/oval/suse.liberty.linux.7.xml.bz2",
     "https://security-data.suse.com/oval/suse.liberty.linux.7-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.micro.5.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.micro.5-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.micro.6.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.linux.micro.6-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.manager.4.3.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.manager.4.3-affected.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.manager.5.1.xml.bz2",
+    "https://ftp.suse.com/pub/projects/security/oval/suse.manager.5.1-affected.xml.bz2",
 ]
 
 STATUS_ALIASES = {
@@ -112,7 +120,7 @@ def filter_packages_for_platform(platform: str, pkgs: set) -> set:
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
-        return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?|Micro\s+[56]|SUSE\s+Manager|Enterprise\s+Storage|CaaS\s+Platform|Rancher|Harvester|NeuVector|^bci/)", re.IGNORECASE)
+        return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?|Micro(?:\s+Extras)?\s+[56]|SUSE\s+(?:Multi-Linux\s+)?Manager|Enterprise\s+Storage|CaaS\s+Platform|Rancher|Harvester|NeuVector|^(?:Container\s+)?bci/)", re.IGNORECASE)
     m_micro = re.match(r"^(?:sl-?micro|micro)-?([56])\.?(\d+)$|^([56])\.(\d+)$", s)
     if m_micro:
         maj = m_micro.group(1) or m_micro.group(3)
@@ -148,6 +156,12 @@ def build_platform_regex(rel_arg: str):
 def get_oval_filepath(major: str) -> str:
     if major.startswith("SLL"):
         return os.path.join(DATA_DIR, f"suse.liberty.linux.{major[3:]}.xml.bz2")
+    if major == "MICRO5":
+        return os.path.join(DATA_DIR, "suse.linux.enterprise.micro.5.xml.bz2")
+    if major == "MICRO6":
+        return os.path.join(DATA_DIR, "suse.linux.micro.6.xml.bz2")
+    if major.startswith("SUMA"):
+        return os.path.join(DATA_DIR, f"suse.manager.{major[4:]}.xml.bz2")
     return os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
 
 
@@ -271,6 +285,9 @@ def fetch_web_data(cve_id: str, platform_regex):
         for p in parts:
             txt = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', p)).strip()
             if not txt or "product" in txt.lower():
+                continue
+            if txt.startswith("Container bci/") or txt.lower().startswith("bci/"):
+                res.append(txt)
                 continue
             if (
                 txt.startswith("Container ")
@@ -3315,6 +3332,14 @@ def build_index():
         ("suse.liberty.linux.8-affected.xml.bz2", "SLL8", "AFFECTED"),
         ("suse.liberty.linux.7.xml.bz2", "SLL7", "RELEASED"),
         ("suse.liberty.linux.7-affected.xml.bz2", "SLL7", "AFFECTED"),
+        ("suse.linux.enterprise.micro.5.xml.bz2", "MICRO5", "RELEASED"),
+        ("suse.linux.enterprise.micro.5-affected.xml.bz2", "MICRO5", "AFFECTED"),
+        ("suse.linux.micro.6.xml.bz2", "MICRO6", "RELEASED"),
+        ("suse.linux.micro.6-affected.xml.bz2", "MICRO6", "AFFECTED"),
+        ("suse.manager.4.3.xml.bz2", "SUMA4.3", "RELEASED"),
+        ("suse.manager.4.3-affected.xml.bz2", "SUMA4.3", "AFFECTED"),
+        ("suse.manager.5.1.xml.bz2", "SUMA5.1", "RELEASED"),
+        ("suse.manager.5.1-affected.xml.bz2", "SUMA5.1", "AFFECTED"),
     ]
 
     total_count = 0
@@ -3654,7 +3679,7 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
     ])
     return "\n".join(lines)
 
-def render_compact_os_matrix(results: list, errors: list = None):
+def render_compact_os_matrix(results: list, errors: list = None, no_eol: bool = False):
     """Render a compact 1-line-per-OS-release matrix with SUSE vs CNA/NVD scores, patch IDs, package counts, lifecycle, and links."""
     def _norm_os(prod: str) -> str:
         p_clean = re.sub(r"^Container\s+", "", prod).strip()
@@ -3663,7 +3688,7 @@ def render_compact_os_matrix(results: list, errors: list = None):
         m_bci = re.match(r"^(bci/[a-zA-Z0-9_\-]+)", p_clean, re.IGNORECASE)
         if m_bci:
             return f"BCI {m_bci.group(1).lower()}"
-        m_suma = re.search(r"SUSE\s+Manager\s+(Server|Proxy|Retail\s+Branch\s+Server)(?:\s+LTS)?\s+(\d+\.\d+)", p_clean, re.IGNORECASE)
+        m_suma = re.search(r"SUSE\s+(?:Multi-Linux\s+)?Manager\s+(Server|Proxy|Retail\s+Branch\s+Server)(?:\s+LTS)?\s+(\d+\.\d+)", p_clean, re.IGNORECASE)
         if m_suma:
             role = "Retail" if "retail" in m_suma.group(1).lower() else m_suma.group(1).title()
             return f"SUSE Manager {role} {m_suma.group(2)}"
@@ -3673,7 +3698,7 @@ def render_compact_os_matrix(results: list, errors: list = None):
         m_caas = re.search(r"SUSE\s+CaaS\s+Platform\s+(\d+(?:\.\d+)?)", p_clean, re.IGNORECASE)
         if m_caas:
             return f"CaaSP {m_caas.group(1)}"
-        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro(?:\s+Extras)?\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
         m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", p_clean, re.IGNORECASE)
@@ -3720,12 +3745,14 @@ def render_compact_os_matrix(results: list, errors: list = None):
             return "LTSS Required"
         if os_name == "SLL 7":
             return "EOL"
+        if os_name.startswith("SL Micro 5.") and any(os_name.endswith(f".{x}") for x in (0, 1, 2, 3, 4)):
+            return "EOL"
         if os_name.startswith(("SES ", "CaaSP ")):
             return "EOL"
-        if os_name.startswith("SUSE Manager") and any(v in os_name for v in ("4.0", "4.1", "4.2")):
+        if os_name.startswith("SUSE Manager") and any(v in os_name for v in ("4.0", "4.1", "4.2", "5.0")):
             return "EOL"
         if os_name.startswith("SUSE Manager") and "4.3" in os_name:
-            return "LTSS / Maintenance"
+            return "LTSS Core"
         if os_name.startswith("BCI "):
             return "Container Image"
         return "General Support"
@@ -3827,6 +3854,8 @@ def render_compact_os_matrix(results: list, errors: list = None):
 
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
             if oname.lower().startswith("opensuse"):
+                continue
+            if no_eol and _os_lifecycle(oname) == "EOL":
                 continue
             b = os_buckets[oname]
             rel_n = len(b["rel_pkgs"])
@@ -4080,7 +4109,7 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
         sys.exit(0 if results else 1)
 
     if as_compact:
-        render_compact_os_matrix(filtered_results, errors=errors)
+        render_compact_os_matrix(filtered_results, errors=errors, no_eol=no_eol)
         sys.exit(0 if results else 1)
 
     if config_mode == "salt":
@@ -4191,6 +4220,10 @@ if __name__ == "__main__":
     as_compact = any(a in ("--compact", "-c") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--compact", "-c")]
 
+    no_eol = "--no-eol" in raw_args
+    if no_eol:
+        raw_args.remove("--no-eol")
+
     with_remediation = False
     for flag in ("--remediate", "--fix"):
         if flag in raw_args:
@@ -4246,7 +4279,7 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
