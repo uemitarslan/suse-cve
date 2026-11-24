@@ -1,6 +1,6 @@
 # suse-cve
 
-> Fast, precision-oriented CLI triage scanner and IaC generator for SUSE Linux Enterprise Server (**SLES 12, 15, 16**) and **SL Micro (5.x, 6.x)** -- combining local OVAL SQLite indexing, live SUSE Security Advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
+> Fast, precision-oriented CLI triage scanner and IaC generator for **SLES (12, 15, 16)**, **SL Micro (5.x, 6.x)**, **SUSE Liberty Linux (SLL 7–10)**, **SUSE Manager / Multi-Linux Manager (4.3, 5.1)**, and **SUSE BCI Container Images** -- combining local OVAL SQLite indexing, live SUSE & Red Hat advisory metadata, lifecycle classification, multi-source threat intelligence, and idempotent SaltStack/Ansible state generation.
 
 `suse-cve` bridges the gap between static OVAL vulnerability feeds and authoritative SUSE Security Advisories. It gives administrators and security engineers an immediate executive triage summary -- classifying affected releases by **General Support**, **LTSS**, or **End-of-Life (EOL)** -- while generating ready-to-audit patch commands, compensating workarounds, structured JSON, and idempotent SaltStack/Ansible configurations.
 
@@ -8,7 +8,7 @@
 
 ## Key Capabilities
 
-1. **Executive Triage Summary & Lifecycle Engine (SLES & SL Micro):**
+1. **Executive Triage Summary & Lifecycle Engine (SLES, SL Micro, SLL, SUSE Manager & BCI):**
    - Categorizes affected and unaffected releases across **SLES 12, 15, 16** and **SL Micro 5.x / 6.x** into **General Support**, **LTSS Required** (with expiration dates), and **End-of-Life (EOL)**.
    - Isolates target-specific status (` NOT AFFECTED`, `RELEASED`, `IN QA`, `AFFECTED`) without leaking unrelated service packs or irrelevant upstream workarounds.
 2. **Hybrid OVAL + Real-Time Web Engine with Air-Gapped Resilience:**
@@ -49,8 +49,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--only-open] [--only-kev] [--json | --csv | --markdown]
-suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
 suse-cve --sync
 ```
 
@@ -58,7 +58,7 @@ suse-cve --sync
 
 | Parameter | Required | Description | Examples |
 |---|---|---|---|
-| `<release>` | No | Target SLES / SL Micro release, or `all` (defaults to `all` if omitted) | `12sp5`, `15sp7`, `16.0`, `micro6.1`, `all` |
+| `<release>` | No | Target SLES, SL Micro, SLL, SUSE Manager, or BCI release (`all` if omitted) | `12sp5`, `15sp7`, `16.0`, `micro6.1`, `sll9`, `suma4.3`, `bci`, `all` |
 | `<cve[,cve2,...]>` | Yes* | Single CVE or comma-separated CVE list (case-insensitive, deduplicated) | `CVE-2026-98432`, `CVE-2026-97876,CVE-2026-98432` |
 | `--file`, `-f` | Yes* | Read CVE IDs from file or `-` for `stdin` (`#` comments & blank lines ignored) | `--file cves.txt`, `-f -` |
 | `[status_filter]` | No | Restrict detail output to a specific patch status | `rel`, `qa`, `aff`, `inp`, `wont` |
@@ -67,6 +67,8 @@ suse-cve --sync
 | `--salt-config` | No | Output an idempotent SaltStack `.sls` state file | `--remediate --salt-config` |
 | `--ansible-config` | No | Output an idempotent Ansible YAML playbook | `--mitigate --ansible-config` |
 | `--table`, `-t` | No | Render compact executive triage table even for a single CVE | `--table` |
+| `--compact`, `-c` | No | Render 1-line-per-OS-release matrix with SUSE/CNA/NVD scores, patch IDs, package counts & lifecycle | `--compact` |
+| `--no-eol` | No | Hide End-of-Life (EOL) rows in `--compact` matrix view to focus on supported releases | `--compact --no-eol` |
 | `--only-open` | No | In batch mode, show only open/pending CVEs (exclude `PATCHED` & `NOT AFFECTED`) | `--only-open` |
 | `--only-kev` | No | In batch mode, show only CVEs listed in the CISA KEV catalog | `--only-kev` |
 | `--json` | No | Emit structured JSON for CI/CD pipelines and automation | `--json` |
@@ -83,9 +85,13 @@ suse-cve --sync
 suse-cve 15sp7 CVE-2026-98432
 ```
 
-### 2. Query Across All SLES & SL Micro Releases (`all` can be omitted)
+### 2. Compact Matrix Across All Active SUSE Products & BCI Containers (`--compact --no-eol`)
 ```bash
-suse-cve CVE-2026-98432
+# Full matrix (active releases prioritized at top, EOL block at bottom)
+suse-cve CVE-2026-129289 --compact
+
+# Active / supported releases and BCI containers only
+suse-cve CVE-2026-129289 --compact --no-eol
 ```
 
 ### 3. Check an End-of-Life or LTSS Release
