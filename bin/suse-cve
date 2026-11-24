@@ -3149,6 +3149,10 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
     rh_errata = sorted({u for u in bz_list if "access.redhat.com/errata/" in u})
     v_refs = [u for u in (mit.get("vendor_refs") or []) if "bugzilla.suse.com" not in u]
     cve_id_str = mit.get("cve", "")
+    if not cve_id_str:
+        m_cve_url = re.search(r"CVE-\d{4}-\d{4,}", str(mit), re.IGNORECASE)
+        if m_cve_url:
+            cve_id_str = m_cve_url.group(0).upper()
     suse_cve_url = f"https://www.suse.com/security/cve/{cve_id_str}.html" if cve_id_str else ""
     rh_cve_url = f"https://access.redhat.com/security/cve/{cve_id_str}" if cve_id_str else ""
 
