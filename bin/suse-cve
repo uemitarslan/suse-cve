@@ -3791,10 +3791,11 @@ def render_compact_os_matrix(results: list, errors: list = None):
             rel_n = len(b["rel_pkgs"])
             qa_n = len(b["qa_pkgs"])
             raw_open = b["open_pkgs"] - b["rel_pkgs"]
-            # If official patches are already released for this OS and SUSE's web portal reports zero open packages
-            # for this OS (e.g. SLES 15 SP7), filter out stale OVAL-only subpackage artifacts (e.g. php7-pear/wddx).
-            if rel_n > 0 and web_open_map and not b["web_open_pkgs"]:
-                open_n = 0
+            web_open_clean = b["web_open_pkgs"] - b["rel_pkgs"]
+            # When official patches exist and SUSE's web portal data is loaded, rely on authoritative
+            # portal open packages instead of stale OVAL subpackage artifacts (e.g. php7-pear/wddx).
+            if rel_n > 0 and web_open_map:
+                open_n = len(web_open_clean)
             else:
                 open_n = len(raw_open)
             up_n = len(b["upstream_streams"])
