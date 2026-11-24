@@ -104,7 +104,7 @@ def filter_packages_for_platform(platform: str, pkgs: set) -> set:
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
-        return "ALL", "", re.compile(r"(?:12|15|16)", re.IGNORECASE)
+        return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?)", re.IGNORECASE)
     m_micro = re.match(r"^(?:sl-?micro|micro)-?([56])\.?(\d+)$|^([56])\.(\d+)$", s)
     if m_micro:
         maj = m_micro.group(1) or m_micro.group(3)
@@ -1453,60 +1453,60 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             del raw_status_map["NOT AFFECTED"]
 
     rh_sll_upstream = []
-    if major.startswith("SLL"):
-        sll_ver = major[3:]
-        sll_prod_label = f"SUSE Liberty Linux {sll_ver}"
-        rh_check = fetch_redhat_intel(cve)
-        rh_rel_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(sll_ver)}\b", re.IGNORECASE)
-        def _fmt_rh_pkg(raw_p: str) -> str:
-            if not raw_p:
-                return ""
-            m_mod = re.match(r'^([a-zA-Z0-9_.\-]+:[0-9.]+)-(\d)(\d{2})\d{2}\d{14}', raw_p)
-            if m_mod:
-                return f"{m_mod.group(1)} (RHEL {m_mod.group(2)}.{int(m_mod.group(3))})"
-            base = clean_pkg_name(raw_p)
-            m_el = re.search(r'\.el(\d+)_(\d+)', raw_p)
-            if m_el:
-                return f"{base} (BaseOS, RHEL {m_el.group(1)}.{m_el.group(2)})"
-            return base
+    sll_target_vers = [major[3:]] if major.startswith("SLL") else (["8", "9", "10"] if major == "ALL" else [])
+    for sll_ver in sll_target_vers:
+            sll_prod_label = f"SUSE Liberty Linux {sll_ver}"
+            rh_check = fetch_redhat_intel(cve)
+            rh_rel_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(sll_ver)}\b", re.IGNORECASE)
+            def _fmt_rh_pkg(raw_p: str) -> str:
+                if not raw_p:
+                    return ""
+                m_mod = re.match(r'^([a-zA-Z0-9_.\-]+:[0-9.]+)-(\d)(\d{2})\d{2}\d{14}', raw_p)
+                if m_mod:
+                    return f"{m_mod.group(1)} (RHEL {m_mod.group(2)}.{int(m_mod.group(3))})"
+                base = clean_pkg_name(raw_p)
+                m_el = re.search(r'\.el(\d+)_(\d+)', raw_p)
+                if m_el:
+                    return f"{base} (BaseOS, RHEL {m_el.group(1)}.{m_el.group(2)})"
+                return base
 
-        for ar in rh_check.get("affected_release", []):
-            prod_name = ar.get("product_name", "")
-            if rh_rel_re.search(prod_name):
-                adv = ar.get("advisory", "").strip()
-                pkg_raw = ar.get("package", "").strip()
-                p_norm = _fmt_rh_pkg(pkg_raw)
-                rh_sll_upstream.append({
-                    "state": "RELEASED_UPSTREAM",
-                    "product": prod_name,
-                    "advisory": adv,
-                    "package": pkg_raw,
-                    "pkg_norm": p_norm,
-                    "release_date": (ar.get("release_date") or "")[:10]
-                })
-                if adv:
-                    rh_errata_url = f"https://access.redhat.com/errata/{adv}"
-                    if rh_errata_url not in bugzilla_urls:
-                        bugzilla_urls.append(rh_errata_url)
-                if p_norm and sll_prod_label not in raw_status_map.get("RELEASED", {}):
-                    raw_status_map.setdefault("UPSTREAM ONLY", {}).setdefault(f"{sll_prod_label} (Not listed by SUSE | Upstream Red Hat: {adv})", set()).add(p_norm)
-        for ps in rh_check.get("package_state", []):
-            prod_name = ps.get("product_name", "")
-            if rh_rel_re.search(prod_name):
-                fix_st = ps.get("fix_state", "").strip()
-                pkg_raw = ps.get("package_name", "").strip()
-                p_norm = clean_pkg_name(pkg_raw.split(":")[-1]) if pkg_raw else ""
-                rh_sll_upstream.append({
-                    "state": fix_st,
-                    "product": prod_name,
-                    "advisory": "",
-                    "package": pkg_raw,
-                    "pkg_norm": p_norm,
-                    "release_date": ""
-                })
-                if p_norm and fix_st.lower() not in ("not affected", "will not fix", "out of support scope"):
-                    if sll_prod_label not in raw_status_map.get("RELEASED", {}):
-                        raw_status_map.setdefault("AFFECTED", {}).setdefault(f"{sll_prod_label} (Upstream: {fix_st})", set()).add(p_norm)
+            for ar in rh_check.get("affected_release", []):
+                prod_name = ar.get("product_name", "")
+                if rh_rel_re.search(prod_name):
+                    adv = ar.get("advisory", "").strip()
+                    pkg_raw = ar.get("package", "").strip()
+                    p_norm = _fmt_rh_pkg(pkg_raw)
+                    rh_sll_upstream.append({
+                        "state": "RELEASED_UPSTREAM",
+                        "product": prod_name,
+                        "advisory": adv,
+                        "package": pkg_raw,
+                        "pkg_norm": p_norm,
+                        "release_date": (ar.get("release_date") or "")[:10]
+                    })
+                    if adv:
+                        rh_errata_url = f"https://access.redhat.com/errata/{adv}"
+                        if rh_errata_url not in bugzilla_urls:
+                            bugzilla_urls.append(rh_errata_url)
+                    if p_norm and sll_prod_label not in raw_status_map.get("RELEASED", {}):
+                        raw_status_map.setdefault("UPSTREAM ONLY", {}).setdefault(f"{sll_prod_label} (Not listed by SUSE | Upstream Red Hat: {adv})", set()).add(p_norm)
+            for ps in rh_check.get("package_state", []):
+                prod_name = ps.get("product_name", "")
+                if rh_rel_re.search(prod_name):
+                    fix_st = ps.get("fix_state", "").strip()
+                    pkg_raw = ps.get("package_name", "").strip()
+                    p_norm = clean_pkg_name(pkg_raw.split(":")[-1]) if pkg_raw else ""
+                    rh_sll_upstream.append({
+                        "state": fix_st,
+                        "product": prod_name,
+                        "advisory": "",
+                        "package": pkg_raw,
+                        "pkg_norm": p_norm,
+                        "release_date": ""
+                    })
+                    if p_norm and fix_st.lower() not in ("not affected", "will not fix", "out of support scope"):
+                        if sll_prod_label not in raw_status_map.get("RELEASED", {}):
+                            raw_status_map.setdefault("AFFECTED", {}).setdefault(f"{sll_prod_label} (Upstream: {fix_st})", set()).add(p_norm)
 
     all_affected_pkgs = set()
     for st_key in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
