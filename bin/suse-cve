@@ -1578,7 +1578,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     rem_cmd = f"transactional-update patch && reboot  # Or: transactional-update pkg in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "transactional-update patch && reboot"
                     rem_title = f"Apply released SL Micro transactional patch for {cve} (REBOOT REQUIRED)"
                 else:
-                    rem_cmd = f"zypper refresh && zypper patch --cve={cve} && zypper ps -s" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
+                    suse_only_ids = [pid for pid in matched_patch_ids if pid.startswith("SUSE-")]
+                    rem_cmd = f"zypper refresh && zypper patch --cve={cve} && zypper ps -s" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(suse_only_ids[:4])}" if suse_only_ids else "")
                     rem_title = f"Apply released SUSE security patch for {cve} ({post_action})"
             mitigation_data["remediation"] = [{
                 "title": rem_title,
@@ -1674,6 +1675,9 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", text, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
+        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", text, re.IGNORECASE)
+        if m_sll:
+            return f"SLL {m_sll.group(1)}"
         low = text.lower()
         if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
             return None
@@ -3125,11 +3129,43 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
         for note in mit["ubuntu_notes"]:
             print(f"  - {note[:260] + ('...' if len(note) > 260 else '')}")
 
-    if mit.get("bugzilla"):
-        print(f"\n  {CLR_BOLD}SUSE Bugzilla:{CLR_RESET} {', '.join(mit['bugzilla'])}")
+    bz_list = mit.get("bugzilla") or []
+    pure_bz = [u for u in bz_list if "bugzilla.suse.com" in u]
+    sll_mail = [u for u in bz_list if "lists.suse.com" in u]
+    rh_errata = sorted({u for u in bz_list if "access.redhat.com/errata/" in u})
+    v_refs = [u for u in (mit.get("vendor_refs") or []) if "bugzilla.suse.com" not in u]
+    cve_id_str = mit.get("cve", "")
+    suse_cve_url = f"https://www.suse.com/security/cve/{cve_id_str}.html" if cve_id_str else ""
+    rh_cve_url = f"https://access.redhat.com/security/cve/{cve_id_str}" if cve_id_str else ""
 
-    if mit.get("vendor_refs"):
-        print(f"  {CLR_BOLD}Vendor Advisories & KBs:{CLR_RESET} {', '.join(mit['vendor_refs'])}")
+    if suse_cve_url or pure_bz or sll_mail or rh_errata or v_refs:
+        print(f"\n  {CLR_BOLD}VENDOR TRACKER & ADVISORY COMPARISON{CLR_RESET}")
+        print(f"  {CLR_DIM}{'-' * 92}{CLR_RESET}")
+        print(f"  {CLR_BOLD}{'Portal / Quelle':<24} URL / Referenz{CLR_RESET}")
+        print(f"  {CLR_DIM}{'-' * 92}{CLR_RESET}")
+        if suse_cve_url:
+            print(f"  {'SUSE CVE Portal':<24} {suse_cve_url}")
+        if rh_cve_url:
+            print(f"  {'Red Hat CVE Portal':<24} {rh_cve_url}")
+        for idx, u in enumerate(pure_bz):
+            lbl = "SUSE Bugzilla" if idx == 0 else ""
+            print(f"  {lbl:<24} {u}")
+        for idx, u in enumerate(sll_mail):
+            lbl = "SUSE Liberty Mailer" if idx == 0 else ""
+            print(f"  {lbl:<24} {u}")
+        if rh_errata:
+            if len(rh_errata) <= 4:
+                for idx, u in enumerate(rh_errata):
+                    lbl = "Red Hat Errata (RHSA)" if idx == 0 else ""
+                    print(f"  {lbl:<24} {u}")
+            else:
+                first_id = rh_errata[0].rsplit("/", 1)[-1]
+                last_id = rh_errata[-1].rsplit("/", 1)[-1]
+                print(f"  {'Red Hat Errata (RHSA)':<24} {len(rh_errata)} Advisories ({first_id} .. {last_id}) -> s. Red Hat CVE Portal")
+        for idx, u in enumerate(v_refs[:3]):
+            lbl = "Vendor Advisories & KBs" if idx == 0 else ""
+            print(f"  {lbl:<24} {u}")
+        print(f"  {CLR_DIM}{'-' * 92}{CLR_RESET}")
 
     if mit.get("remediation") and view_mode != "mitigate":
         print(f"\n  {CLR_BOLD}Recommended SLES Remediation (Patch Available):{CLR_RESET}")
