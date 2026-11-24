@@ -112,7 +112,7 @@ def filter_packages_for_platform(platform: str, pkgs: set) -> set:
 def build_platform_regex(rel_arg: str):
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
-        return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?)", re.IGNORECASE)
+        return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?|Micro\s+[56]|SUSE\s+Manager|Enterprise\s+Storage|CaaS\s+Platform|Rancher|Harvester|NeuVector|^bci/)", re.IGNORECASE)
     m_micro = re.match(r"^(?:sl-?micro|micro)-?([56])\.?(\d+)$|^([56])\.(\d+)$", s)
     if m_micro:
         maj = m_micro.group(1) or m_micro.group(3)
@@ -123,6 +123,14 @@ def build_platform_regex(rel_arg: str):
         maj = m_sll.group(1)
         minor = m_sll.group(2) or ""
         return f"SLL{maj}", minor, re.compile(rf"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+{maj}\b", re.IGNORECASE)
+    if s.startswith(("suma", "manager")):
+        return "ALL", "", re.compile(r"SUSE\s+Manager", re.IGNORECASE)
+    if s.startswith(("ses", "storage")):
+        return "ALL", "", re.compile(r"Enterprise\s+Storage", re.IGNORECASE)
+    if s.startswith(("caasp", "caas")):
+        return "ALL", "", re.compile(r"CaaS\s+Platform", re.IGNORECASE)
+    if s.startswith("bci"):
+        return "ALL", "", re.compile(r"^bci/", re.IGNORECASE)
 
     m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
     major = m.group(1) if m else "15"
@@ -298,7 +306,7 @@ def fetch_web_data(cve_id: str, platform_regex):
             continue
 
         # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE or RHSA advisories)
-        if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'(?:SUSE-(?:SLE|SU|RU|FU)-|RHSA-\d{4}:\d+)', tds[2])):
+        if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'(?:SUSE-(?:SLE|SU|RU|FU|CU)-|RHSA-\d{4}:\d+)', tds[2]) or all(p.startswith("Container ") for p in prods)):
             pkgs = extract_pkgs_from_cell(tds[1])
             patches = extract_patchnames_from_cell(tds[2])
             for prod in prods:
@@ -3649,19 +3657,35 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
 def render_compact_os_matrix(results: list, errors: list = None):
     """Render a compact 1-line-per-OS-release matrix with SUSE vs CNA/NVD scores, patch IDs, package counts, lifecycle, and links."""
     def _norm_os(prod: str) -> str:
-        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", prod, re.IGNORECASE)
+        p_clean = re.sub(r"^Container\s+", "", prod).strip()
+        if p_clean.lower().startswith("opensuse "):
+            return p_clean
+        m_bci = re.match(r"^(bci/[a-zA-Z0-9_\-]+)", p_clean, re.IGNORECASE)
+        if m_bci:
+            return f"BCI {m_bci.group(1).lower()}"
+        m_suma = re.search(r"SUSE\s+Manager\s+(Server|Proxy|Retail\s+Branch\s+Server)(?:\s+LTS)?\s+(\d+\.\d+)", p_clean, re.IGNORECASE)
+        if m_suma:
+            role = "Retail" if "retail" in m_suma.group(1).lower() else m_suma.group(1).title()
+            return f"SUSE Manager {role} {m_suma.group(2)}"
+        m_ses = re.search(r"SUSE\s+Enterprise\s+Storage\s+(\d+(?:\.\d+)?)", p_clean, re.IGNORECASE)
+        if m_ses:
+            return f"SES {m_ses.group(1)}"
+        m_caas = re.search(r"SUSE\s+CaaS\s+Platform\s+(\d+(?:\.\d+)?)", p_clean, re.IGNORECASE)
+        if m_caas:
+            return f"CaaSP {m_caas.group(1)}"
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
-        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", prod, re.IGNORECASE)
+        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", p_clean, re.IGNORECASE)
         if m_sll:
             return f"SLL {m_sll.group(1)}"
-        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)(?:\s+for\s+[^0-9]+)?\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", prod, re.IGNORECASE)
+        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)(?:\s+for\s+[^0-9]+)?\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", p_clean, re.IGNORECASE)
         if m_sle:
             maj, sp = m_sle.group(1), m_sle.group(2)
             if maj == "16":
                 return f"SLES 16.{sp if sp else '0'}"
             return f"SLES {maj} SP{sp}" if sp else f"SLES {maj}"
-        return prod
+        return p_clean
 
     def _os_sort_key(os_name: str):
         if os_name.startswith("SLES 12"):
@@ -3678,7 +3702,13 @@ def render_compact_os_matrix(results: list, errors: list = None):
         if os_name.startswith("SLL "):
             m = re.search(r"SLL\s+(\d+)", os_name)
             return (4, int(m.group(1)) if m else 0, os_name)
-        return (5, 0, os_name)
+        if os_name.startswith("SUSE Manager"):
+            return (5, 0, os_name)
+        if os_name.startswith(("SES ", "CaaSP ")):
+            return (6, 0, os_name)
+        if os_name.startswith("BCI "):
+            return (7, 0, os_name)
+        return (8, 0, os_name)
 
     def _os_lifecycle(os_name: str) -> str:
         if os_name.startswith("SLES 12"):
@@ -3689,6 +3719,14 @@ def render_compact_os_matrix(results: list, errors: list = None):
             return "LTSS Required"
         if os_name == "SLL 7":
             return "EOL"
+        if os_name.startswith(("SES ", "CaaSP ")):
+            return "EOL"
+        if os_name.startswith("SUSE Manager") and any(v in os_name for v in ("4.0", "4.1", "4.2")):
+            return "EOL"
+        if os_name.startswith("SUSE Manager") and "4.3" in os_name:
+            return "LTSS / Maintenance"
+        if os_name.startswith("BCI "):
+            return "Container Image"
         return "General Support"
 
     matrix_rows = []
@@ -3787,6 +3825,8 @@ def render_compact_os_matrix(results: list, errors: list = None):
             })
 
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
+            if oname.lower().startswith("opensuse"):
+                continue
             b = os_buckets[oname]
             rel_n = len(b["rel_pkgs"])
             qa_n = len(b["qa_pkgs"])
@@ -3838,7 +3878,12 @@ def render_compact_os_matrix(results: list, errors: list = None):
 
             lc = _os_lifecycle(oname)
             if st_label in ("RELEASED", "PARTIAL"):
-                pkg_mgr = "dnf update" if oname.startswith("SLL") else "zypper patch"
+                if oname.startswith("BCI "):
+                    pkg_mgr = "pull updated image"
+                elif oname.startswith("SLL"):
+                    pkg_mgr = "dnf update"
+                else:
+                    pkg_mgr = "zypper patch"
                 act_col = f"{lc} -> {pkg_mgr}"
             elif st_label == "NOT AFFECTED":
                 act_col = f"{lc} (Not Affected)"
