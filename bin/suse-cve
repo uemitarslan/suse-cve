@@ -3688,27 +3688,28 @@ def render_compact_os_matrix(results: list, errors: list = None):
         return p_clean
 
     def _os_sort_key(os_name: str):
+        eol_rank = 1 if _os_lifecycle(os_name) == "EOL" else 0
         if os_name.startswith("SLES 12"):
             m = re.search(r"SP(\d+)", os_name)
-            return (0, int(m.group(1)) if m else 0, os_name)
+            return (eol_rank, 0, int(m.group(1)) if m else 0, os_name)
         if os_name.startswith("SLES 15"):
             m = re.search(r"SP(\d+)", os_name)
-            return (1, int(m.group(1)) if m else -1, os_name)
+            return (eol_rank, 1, int(m.group(1)) if m else -1, os_name)
         if os_name.startswith("SLES 16"):
             m = re.search(r"16\.(\d+)", os_name)
-            return (2, int(m.group(1)) if m else 0, os_name)
+            return (eol_rank, 2, int(m.group(1)) if m else 0, os_name)
         if os_name.startswith("SL Micro"):
-            return (3, 0, os_name)
+            return (eol_rank, 3, 0, os_name)
         if os_name.startswith("SLL "):
             m = re.search(r"SLL\s+(\d+)", os_name)
-            return (4, int(m.group(1)) if m else 0, os_name)
+            return (eol_rank, 4, int(m.group(1)) if m else 0, os_name)
         if os_name.startswith("SUSE Manager"):
-            return (5, 0, os_name)
+            return (eol_rank, 5, 0, os_name)
         if os_name.startswith(("SES ", "CaaSP ")):
-            return (6, 0, os_name)
+            return (eol_rank, 6, 0, os_name)
         if os_name.startswith("BCI "):
-            return (7, 0, os_name)
-        return (8, 0, os_name)
+            return (eol_rank, 7, 0, os_name)
+        return (eol_rank, 8, 0, os_name)
 
     def _os_lifecycle(os_name: str) -> str:
         if os_name.startswith("SLES 12"):
