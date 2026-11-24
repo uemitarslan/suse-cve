@@ -1534,7 +1534,12 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                         u_rh = f"https://access.redhat.com/errata/{pid}"
                         if u_rh not in bugzilla_urls:
                             bugzilla_urls.append(u_rh)
-        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, target_vuln_pkgs, suse_intel_meta)
+        clean_mit_pkgs = {re.sub(r"\s*\(.*\)$", "", p).split(":")[0] for p in target_vuln_pkgs}
+        mitigation_data = generate_mitigation_report(cve, bugzilla_urls, clean_mit_pkgs, suse_intel_meta)
+        if major.startswith("SLL"):
+            for sug in mitigation_data.get("suggestions", []):
+                if "zypper lp" in sug.get("cmd", ""):
+                    sug["cmd"] = f"dnf updateinfo list --cve={cve} && dnf check-update --security  # Verify patch availability in SCC/RMT; restart affected services once released"
         target_has_released = any(
             (major == "ALL" or sp_regex.search(p_k))
             for p_k in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys())
@@ -1915,8 +1920,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         print(f"  {c_aff_b}[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.{CLR_RESET}")
     sll_released_vers = sorted({
         m.group(1)
-        for p in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys())
-        for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
+        for p in list(raw_status_map.get("RELEASED", {}).keys()) + list(patch_map.keys()) + list(web_all_prods)
+        for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+(7|8|10)\b", p, re.IGNORECASE)]
         if m
     })
     sll_any_vers = sorted({
