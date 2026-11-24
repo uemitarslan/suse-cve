@@ -344,7 +344,7 @@ def fetch_web_data(cve_id: str, platform_regex):
     m_rt = re.search(r"rated as having\s*<a[^>]*>([^<]+)</a>\s*severity", html, re.IGNORECASE)
     if m_rt:
         suse_intel["rating"] = m_rt.group(1).strip().upper()
-    m_v3_tbl = re.search(r"CVSS v3 Scores.*?<table[^>]*>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
+    m_v3_tbl = re.search(r"<table[^>]*>\s*<caption>.*?CVSS v3 Scores.*?</caption>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
     if m_v3_tbl:
         tbl3 = m_v3_tbl.group(1)
         hdr3 = [re.sub(r"<[^>]+>", "", h).strip() for h in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tbl3.split("</tr>")[0], re.DOTALL | re.IGNORECASE)]
@@ -370,7 +370,7 @@ def fetch_web_data(cve_id: str, platform_regex):
         if "cvss3" not in suse_intel and "suse_cvss3" in suse_intel:
             suse_intel["cvss3"] = suse_intel["suse_cvss3"]
 
-    m_v4_tbl = re.search(r"CVSS v4 Scores.*?<table[^>]*>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
+    m_v4_tbl = re.search(r"<table[^>]*>\s*<caption>.*?CVSS v4 Scores.*?</caption>(.*?)</table>", html, re.DOTALL | re.IGNORECASE)
     if m_v4_tbl:
         tbl4 = m_v4_tbl.group(1)
         hdr4 = [re.sub(r"<[^>]+>", "", h).strip() for h in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tbl4.split("</tr>")[0], re.DOTALL | re.IGNORECASE)]
@@ -3649,7 +3649,7 @@ def render_compact_os_matrix(results: list, errors: list = None):
         m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", prod, re.IGNORECASE)
         if m_sll:
             return f"SLL {m_sll.group(1)}"
-        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", prod, re.IGNORECASE)
+        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)(?:\s+for\s+[^0-9]+)?\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", prod, re.IGNORECASE)
         if m_sle:
             maj, sp = m_sle.group(1), m_sle.group(2)
             if maj == "16":
@@ -3696,7 +3696,12 @@ def render_compact_os_matrix(results: list, errors: list = None):
         nvd = mit.get("nvd") or {}
 
         suse_rt = (si.get("rating") or mit.get("suse_rating") or "").upper()
-        suse_bs = si.get("suse_base_score") or ""
+        s3 = (si.get("suse_cvss3") or "").split(" ")[0]
+        s4 = (si.get("suse_cvss4") or "").split(" ")[0]
+        if s3 and s4 and s3 != s4:
+            suse_bs = f"{s3}/{s4}"
+        else:
+            suse_bs = s4 or s3 or (si.get("suse_base_score") or "")
         if suse_rt and suse_bs:
             suse_score_col = f"{suse_rt} {suse_bs}"
         elif suse_rt:
@@ -3794,7 +3799,7 @@ def render_compact_os_matrix(results: list, errors: list = None):
             if st_label == "NOT AFFECTED" and len(os_buckets) > 4:
                 continue
 
-            pids = sorted(b["patches"])
+            pids = sorted(b["patches"], key=lambda x: (0 if ("Product-SLES-" in x or "Module-Web-Scripting" in x or x.startswith("RHSA-")) else 1, x))
             if st_label == "UPSTREAM ONLY" and pids:
                 patch_col = f"Upstream: {pids[0]}" + (f" (+{len(pids)-1})" if len(pids) > 1 else "")
             elif pids:
