@@ -109,6 +109,11 @@ def build_platform_regex(rel_arg: str):
         maj = m_micro.group(1) or m_micro.group(3)
         minor = m_micro.group(2) or m_micro.group(4)
         return f"MICRO{maj}", minor, re.compile(rf"(?:Enterprise|Linux)\s+Micro\s+{maj}\.{minor}\b", re.IGNORECASE)
+    m_sll = re.match(r"^(?:sll|res|liberty)-?([789]|10)(?:\.(\d+))?$", s)
+    if m_sll:
+        maj = m_sll.group(1)
+        minor = m_sll.group(2) or ""
+        return f"SLL{maj}", minor, re.compile(rf"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+{maj}\b", re.IGNORECASE)
 
     m = re.search(r'(\d+)(?:[-. ]?sp|\.)?(\d+)?', s)
     major = m.group(1) if m else "15"
@@ -180,7 +185,7 @@ def extract_patchnames_from_cell(cell_html: str) -> list:
     """Extract SUSE patch IDs and architectures from column 3 ('Patchnames: ...')."""
     plain = re.sub(r'<[^>]+>', ' ', cell_html)
     plain = re.sub(r'\s+', ' ', plain).strip()
-    matches = re.findall(r'(SUSE-[A-Za-z0-9_.\-]+)\s*\(([^)]+)\)', plain)
+    matches = re.findall(r'((?:SUSE-[A-Za-z0-9_.\-]+|RHSA-\d{4}:\d+))\s*\(([^)]+)\)', plain)
     results = []
     seen = set()
     for p_id, arch_str in matches:
@@ -228,8 +233,8 @@ def fetch_web_data(cve_id: str, platform_regex):
     except Exception:
         return web_map, patch_map, bugzilla_urls, web_last_modified_str, web_dt, web_all_prods_for_major, False
 
-    # Extract Bugzilla links (used by --mitigate)
-    bz_matches = re.findall(r'https?://bugzilla\.suse\.com/show_bug\.cgi\?id=\d+', html, re.IGNORECASE)
+    # Extract Bugzilla & SUSE Liberty Linux announcement links (used by --mitigate)
+    bz_matches = re.findall(r'https?://(?:bugzilla\.suse\.com/show_bug\.cgi\?id=\d+|lists\.suse\.com/pipermail/suse-liberty-linux-updates/[^"\s<>]+\.html)', html, re.IGNORECASE)
     seen_bz = set()
     for b in bz_matches:
         if b not in seen_bz:
@@ -277,8 +282,8 @@ def fetch_web_data(cve_id: str, platform_regex):
         if not prods:
             continue
 
-        # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE advisories)
-        if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'SUSE-(?:SLE|SU|RU|FU)-', tds[2])):
+        # Case A: 'List of Released Packages' table (column 3 contains Patchnames / SUSE or RHSA advisories)
+        if len(tds) >= 3 and ("patchnames:" in tds[2].lower() or re.search(r'(?:SUSE-(?:SLE|SU|RU|FU)-|RHSA-\d{4}:\d+)', tds[2])):
             pkgs = extract_pkgs_from_cell(tds[1])
             patches = extract_patchnames_from_cell(tds[2])
             for prod in prods:
@@ -428,7 +433,7 @@ def fetch_cisa_kev(cve_id: str):
 def fetch_redhat_intel(cve_id: str) -> dict:
     """Fetch official mitigation and statement texts from Red Hat Security Data API (CC BY 4.0)."""
     rh_url = f"https://access.redhat.com/hydra/rest/securitydata/cve/{cve_id}.json"
-    res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url}
+    res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url, "affected_release": [], "package_state": []}
     try:
         proc = subprocess.run(
             ["curl", "-sL", "--connect-timeout", "4", "--max-time", "8", "-H", "User-Agent: suse-cve-cli/1.0", rh_url],
@@ -456,6 +461,10 @@ def fetch_redhat_intel(cve_id: str) -> dict:
         bz = data.get("bugzilla")
         if isinstance(bz, dict):
             res["bugzilla_desc"] = bz.get("description", "").strip()
+        if isinstance(data.get("affected_release"), list):
+            res["affected_release"] = data["affected_release"]
+        if isinstance(data.get("package_state"), list):
+            res["package_state"] = data["package_state"]
 
         res["page_url"] = f"https://access.redhat.com/security/cve/{cve_id}"
         if "see the security bulletin" in res["mitigation"].lower():
@@ -1177,6 +1186,9 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
         m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro\s+([56])\.(\d+)\b", text, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
+        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", text, re.IGNORECASE)
+        if m_sll:
+            return f"SLL {m_sll.group(1)}"
         low = text.lower()
         if "opensuse" in low or low.startswith("container ") or low.startswith("image "):
             return None
@@ -1439,6 +1451,46 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         if not raw_status_map["NOT AFFECTED"]:
             del raw_status_map["NOT AFFECTED"]
 
+    rh_sll_upstream = []
+    if major.startswith("SLL"):
+        sll_ver = major[3:]
+        sll_prod_label = f"SUSE Liberty Linux {sll_ver}"
+        rh_check = fetch_redhat_intel(cve)
+        rh_rel_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(sll_ver)}\b", re.IGNORECASE)
+        for ar in rh_check.get("affected_release", []):
+            prod_name = ar.get("product_name", "")
+            if rh_rel_re.search(prod_name):
+                adv = ar.get("advisory", "").strip()
+                pkg_raw = ar.get("package", "").strip()
+                p_norm = re.sub(r"-\d{5,}.*$", "", clean_pkg_name(pkg_raw)) if pkg_raw else ""
+                rh_sll_upstream.append({
+                    "state": "RELEASED_UPSTREAM",
+                    "product": prod_name,
+                    "advisory": adv,
+                    "package": pkg_raw,
+                    "pkg_norm": p_norm,
+                    "release_date": (ar.get("release_date") or "")[:10]
+                })
+                if p_norm and sll_prod_label not in raw_status_map.get("RELEASED", {}):
+                    raw_status_map.setdefault("IN PROGRESS", {}).setdefault(f"{sll_prod_label} (Upstream {adv} - Pending SCC Sync)", set()).add(p_norm)
+        for ps in rh_check.get("package_state", []):
+            prod_name = ps.get("product_name", "")
+            if rh_rel_re.search(prod_name):
+                fix_st = ps.get("fix_state", "").strip()
+                pkg_raw = ps.get("package_name", "").strip()
+                p_norm = clean_pkg_name(pkg_raw.split(":")[-1]) if pkg_raw else ""
+                rh_sll_upstream.append({
+                    "state": fix_st,
+                    "product": prod_name,
+                    "advisory": "",
+                    "package": pkg_raw,
+                    "pkg_norm": p_norm,
+                    "release_date": ""
+                })
+                if p_norm and fix_st.lower() not in ("not affected", "will not fix", "out of support scope"):
+                    if sll_prod_label not in raw_status_map.get("RELEASED", {}):
+                        raw_status_map.setdefault("AFFECTED", {}).setdefault(f"{sll_prod_label} (Upstream: {fix_st})", set()).add(p_norm)
+
     all_affected_pkgs = set()
     for st_key in ("RELEASED", "IN QA", "IN PROGRESS", "AFFECTED"):
         for pkgs in raw_status_map.get(st_key, {}).values():
@@ -1468,21 +1520,33 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                         pid = (p_item.get("patch", "") if isinstance(p_item, dict) else str(p_item).split(" (")[0]).strip()
                         if pid and pid not in matched_patch_ids:
                             matched_patch_ids.append(pid)
+            if major != "ALL" and "ltss" not in rel_arg.lower() and "espos" not in rel_arg.lower():
+                non_ltss = [pid for pid in matched_patch_ids if not any(tag in pid.upper() for tag in ("-LTSS-", "-ESPOS-", "-TERADATA-"))]
+                if non_ltss:
+                    matched_patch_ids = non_ltss
             matched_patch_ids.sort(key=rank_suse_patch_id)
             needs_reboot = any(
                 p.startswith(("kernel-", "glibc", "systemd", "xen", "dbus"))
                 for p in target_vuln_pkgs
             )
-            post_action = "REBOOT REQUIRED after patching" if needs_reboot else "Restart affected daemons (verify via 'zypper ps -s')"
-            is_micro_target = major.startswith("MICRO") or (
-                major == "ALL" and any("Micro" in k for k in patch_map.keys()) and not any("Server" in k for k in patch_map.keys())
-            )
-            if is_micro_target:
-                rem_cmd = f"transactional-update patch && reboot  # Or: transactional-update pkg in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "transactional-update patch && reboot"
-                rem_title = f"Apply released SL Micro transactional patch for {cve} (REBOOT REQUIRED)"
+            is_sll_target = major.startswith("SLL")
+            if is_sll_target:
+                post_action = "REBOOT REQUIRED after patching" if needs_reboot else "Restart affected services (verify via 'needs-restarting -s')"
+                rhsa_ids = [pid for pid in matched_patch_ids if pid.startswith("RHSA-")]
+                adv_hint = f"  # Explicit advisories: dnf update --advisory={','.join(rhsa_ids[:4])}" if rhsa_ids else ""
+                rem_cmd = f"dnf clean expire-cache && dnf update --cve={cve} -y && needs-restarting -s{adv_hint}"
+                rem_title = f"Apply released SUSE Liberty Linux security update for {cve} ({post_action})"
             else:
-                rem_cmd = f"zypper refresh && zypper patch --cve={cve} && zypper ps -s" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
-                rem_title = f"Apply released SUSE security patch for {cve} ({post_action})"
+                post_action = "REBOOT REQUIRED after patching" if needs_reboot else "Restart affected daemons (verify via 'zypper ps -s')"
+                is_micro_target = major.startswith("MICRO") or (
+                    major == "ALL" and any("Micro" in k for k in patch_map.keys()) and not any("Server" in k for k in patch_map.keys())
+                )
+                if is_micro_target:
+                    rem_cmd = f"transactional-update patch && reboot  # Or: transactional-update pkg in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "transactional-update patch && reboot"
+                    rem_title = f"Apply released SL Micro transactional patch for {cve} (REBOOT REQUIRED)"
+                else:
+                    rem_cmd = f"zypper refresh && zypper patch --cve={cve} && zypper ps -s" + (f"  # Explicit patch IDs: zypper in -t patch {' '.join(matched_patch_ids[:4])}" if matched_patch_ids else "")
+                    rem_title = f"Apply released SUSE security patch for {cve} ({post_action})"
             mitigation_data["remediation"] = [{
                 "title": rem_title,
                 "cmd": rem_cmd
@@ -1834,7 +1898,11 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         print(f"{h_color}[{st}]{CLR_RESET}")
         for p, pkgs in p_dict.items():
             if pkgs:
-                pkgs_formatted = f"{p_color}{', '.join(pkgs)}{CLR_RESET}"
+                if major == "ALL" and len(pkgs) > 8:
+                    shown = ", ".join(pkgs[:6])
+                    pkgs_formatted = f"{p_color}{shown}{CLR_RESET} {CLR_DIM}(+{len(pkgs) - 6} more packages; specify release for full list){CLR_RESET}"
+                else:
+                    pkgs_formatted = f"{p_color}{', '.join(pkgs)}{CLR_RESET}"
                 print(f"  {CLR_DIM}-{CLR_RESET} {CLR_BOLD}{p}{CLR_RESET} -> {pkgs_formatted}")
         print()
 
@@ -2657,6 +2725,25 @@ def render_ansible_config(cve: str, rel_arg: str, mitigation_data: dict, force_w
                 "      when: tu_patch_result is changed",
                 ""
             ])
+        elif "dnf " in cmd:
+            needs_reboot = "REBOOT REQUIRED" in rem.get("title", "")
+            lines.extend([
+                f"    - name: Refresh DNF metadata and apply security update for {cve}",
+                "      ansible.builtin.shell: |",
+                f"        dnf clean expire-cache && dnf update --cve={cve} -y",
+                "      register: patch_result",
+                "      changed_when: patch_result.rc == 0",
+                "      when: ansible_facts['os_family'] == 'RedHat'",
+                ""
+            ])
+            if needs_reboot:
+                lines.extend([
+                    "    - name: Reboot host if required by updated kernel/core libraries",
+                    "      ansible.builtin.reboot:",
+                    f'        msg: "Reboot triggered by {cve} security update"',
+                    "      when: patch_result is changed",
+                    ""
+                ])
         else:
             needs_reboot = "REBOOT REQUIRED" in rem.get("title", "")
             lines.extend([
@@ -3683,6 +3770,7 @@ if __name__ == "__main__":
         print("          suse-cve 15sp7 CVE-2026-98432 --remediate --salt-config   (SaltStack patch state)")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --salt-config    (SaltStack workaround state)")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --ansible-config (Ansible workaround playbook)")
+        print("          suse-cve sll9 CVE-2026-129289          (SUSE Liberty Linux 9 / RHSA cross-reference)")
         print("          suse-cve all CVE-2026-98432 rel --json")
         print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
         sys.exit(1)
