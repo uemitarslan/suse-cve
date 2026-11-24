@@ -29,6 +29,14 @@ OVAL_URLS = [
     "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.15-affected.xml.bz2",
     "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.12.xml.bz2",
     "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.12-affected.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.10.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.10-affected.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.9.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.9-affected.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.8.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.8-affected.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.7.xml.bz2",
+    "https://security-data.suse.com/oval/suse.liberty.linux.7-affected.xml.bz2",
 ]
 
 STATUS_ALIASES = {
@@ -129,9 +137,15 @@ def build_platform_regex(rel_arg: str):
     return major, sp, regex
 
 
+def get_oval_filepath(major: str) -> str:
+    if major.startswith("SLL"):
+        return os.path.join(DATA_DIR, f"suse.liberty.linux.{major[3:]}.xml.bz2")
+    return os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
+
+
 def get_oval_timestamp(major: str):
     """Return (formatted timestamp string, UTC datetime object)."""
-    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{major}.xml.bz2")
+    fpath = get_oval_filepath(major)
     if not os.path.exists(fpath):
         return "N/A", None
     try:
@@ -1267,7 +1281,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     diff_hours = 0
     is_stale = False
-    fpath = os.path.join(DATA_DIR, f"suse.linux.enterprise.{'15' if major == 'ALL' else major}.xml.bz2")
+    fpath = get_oval_filepath("15" if major == "ALL" else major)
     recently_synced = False
     if os.path.exists(fpath):
         file_age_hours = (datetime.now(timezone.utc).timestamp() - os.path.getmtime(fpath)) / 3600.0
@@ -3212,7 +3226,7 @@ def print_mitigation_block(mit: dict, view_mode: str = 'all'):
 
 
 def build_index():
-    print("=== Building local OVAL index (SLES 12, 15, 16) ===")
+    print("=== Building local OVAL index (SLES 12, 15, 16 & SUSE Liberty Linux 7-10) ===")
     tmp_db = DB_PATH + ".tmp"
     if os.path.exists(tmp_db):
         os.remove(tmp_db)
@@ -3229,6 +3243,14 @@ def build_index():
         ("suse.linux.enterprise.15-affected.xml.bz2", "15", "AFFECTED"),
         ("suse.linux.enterprise.12.xml.bz2", "12", "RELEASED"),
         ("suse.linux.enterprise.12-affected.xml.bz2", "12", "AFFECTED"),
+        ("suse.liberty.linux.10.xml.bz2", "SLL10", "RELEASED"),
+        ("suse.liberty.linux.10-affected.xml.bz2", "SLL10", "AFFECTED"),
+        ("suse.liberty.linux.9.xml.bz2", "SLL9", "RELEASED"),
+        ("suse.liberty.linux.9-affected.xml.bz2", "SLL9", "AFFECTED"),
+        ("suse.liberty.linux.8.xml.bz2", "SLL8", "RELEASED"),
+        ("suse.liberty.linux.8-affected.xml.bz2", "SLL8", "AFFECTED"),
+        ("suse.liberty.linux.7.xml.bz2", "SLL7", "RELEASED"),
+        ("suse.liberty.linux.7-affected.xml.bz2", "SLL7", "AFFECTED"),
     ]
 
     total_count = 0
@@ -3259,7 +3281,7 @@ def build_index():
                 if found_cves:
                     platforms = [p.text.strip() for p in elem.findall(".//{*}platform") if p.text]
                     if not platforms:
-                        platforms = [f"SUSE Linux Enterprise {major}"]
+                        platforms = [f"SUSE Liberty Linux {major[3:]}" if major.startswith("SLL") else f"SUSE Linux Enterprise {major}"]
 
                     pkg_names = set()
                     for crit in elem.findall(".//{*}criterion"):
