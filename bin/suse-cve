@@ -2067,20 +2067,84 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             for x in rh_for_gap
             if str(x.get("advisory", "")).startswith("RHSA-")
         })
-        missing_rhsas = [r for r in rhel_rhsas if r not in suse_rhsas]
-        gap_packages = {}
-        for r_id in missing_rhsas:
-            pkgs_for_r = sorted({
-                (x.get("package") or "").strip()
-                for x in rh_for_gap
-                if (x.get("advisory") or "").strip() == r_id and (x.get("package") or "").strip()
-            })
-            if pkgs_for_r:
-                gap_packages[r_id] = pkgs_for_r
-        errata_urls = [f"https://access.redhat.com/errata/{r}" for r in rhel_rhsas]
-        gap_errata_urls = [f"https://access.redhat.com/errata/{r}" for r in missing_rhsas]
+        def _prod_major_vers(prod_str):
+            p = prod_str or ""
+            found = []
+            for m in re.finditer(r"(?:SLL|Red Hat Enterprise Linux)\s*(\d+)", p, re.IGNORECASE):
+                mv = m.group(1)
+                if mv not in found:
+                    found.append(mv)
+            return found
+
+        suse_rhsas_by_ver = {v: set() for v in target_vers}
+        for prod, plist in patch_map.items():
+            p_vers = _prod_major_vers(prod)
+            for p_obj in plist:
+                pid = (p_obj.get("patch") or "").strip()
+                if not pid.startswith("RHSA-"):
+                    continue
+                if p_vers:
+                    for mv in p_vers:
+                        if mv in suse_rhsas_by_ver:
+                            suse_rhsas_by_ver[mv].add(pid)
+                else:
+                    for v in target_vers:
+                        suse_rhsas_by_ver[v].add(pid)
+
+        rhel_rhsas_by_ver = {v: [] for v in target_vers}
+        for x in rh_for_gap:
+            adv = (x.get("advisory") or "").strip()
+            if not adv:
+                continue
+            xv = (x.get("sll_ver") or "").strip()
+            if not xv:
+                p_vers = _prod_major_vers(x.get("product") or "")
+                xv = p_vers[0] if p_vers else ""
+            if xv in rhel_rhsas_by_ver and adv not in rhel_rhsas_by_ver[xv]:
+                rhel_rhsas_by_ver[xv].append(adv)
+
+        by_version = {}
+        agg_missing = []
+        agg_gap_packages = {}
+        agg_gap_urls = []
+        for v in sorted(target_vers, key=lambda s: int(s) if s.isdigit() else 999):
+            v_suse = sorted(suse_rhsas_by_ver.get(v) or set())
+            v_rhel = list(rhel_rhsas_by_ver.get(v) or [])
+            v_missing = [r for r in v_rhel if r not in set(v_suse)]
+            v_gap_pkgs = {}
+            for r_id in v_missing:
+                pkgs_for_r = sorted({
+                    (x.get("package") or "").strip()
+                    for x in rh_for_gap
+                    if (x.get("advisory") or "").strip() == r_id
+                    and (x.get("sll_ver") or v) == v
+                    and (x.get("package") or "").strip()
+                })
+                if pkgs_for_r:
+                    v_gap_pkgs[r_id] = pkgs_for_r
+                    agg_gap_packages[r_id] = pkgs_for_r
+            v_gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in v_missing]
+            by_version[v] = {
+                "suse_rhsas": v_suse,
+                "rhel_rhsas": v_rhel,
+                "missing_rhsas": v_missing,
+                "gap_packages": v_gap_pkgs,
+                "has_gap": bool(v_missing),
+                "gap_errata_urls": v_gap_urls,
+            }
+            for r_id in v_missing:
+                if r_id not in agg_missing:
+                    agg_missing.append(r_id)
+            for u in v_gap_urls:
+                if u not in agg_gap_urls:
+                    agg_gap_urls.append(u)
+
+        missing_rhsas = agg_missing
+        gap_packages = agg_gap_packages
+        errata_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in rhel_rhsas]
+        gap_errata_urls = agg_gap_urls
         sll_gap = {
-            "target_versions": target_vers,
+            "target_versions": sorted(target_vers, key=lambda s: int(s) if s.isdigit() else 999),
             "suse_rhsas": suse_rhsas,
             "rhel_rhsas": rhel_rhsas,
             "missing_rhsas": missing_rhsas,
@@ -2088,6 +2152,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             "has_gap": bool(missing_rhsas),
             "errata_urls": errata_urls,
             "gap_errata_urls": gap_errata_urls,
+            "by_version": by_version,
         }
         if mitigation_data is not None:
             mitigation_data["sll_gap"] = sll_gap
@@ -4100,9 +4165,16 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             })
 
             gap_meta = mit.get("sll_gap") or item.get("sll_gap") or {}
-            m_rhsas = gap_meta.get("missing_rhsas") or []
-            if oname.startswith("SLL") and m_rhsas:
+            m_os_ver = re.search(r"\bSLL\s*(\d+)\b", oname, re.IGNORECASE)
+            v_key = m_os_ver.group(1) if m_os_ver else None
+            v_gap = (gap_meta.get("by_version") or {}).get(v_key) if v_key else None
+            if v_gap is not None:
+                m_rhsas = v_gap.get("missing_rhsas") or []
+                g_pkgs_map = v_gap.get("gap_packages") or {}
+            else:
+                m_rhsas = gap_meta.get("missing_rhsas") or []
                 g_pkgs_map = gap_meta.get("gap_packages") or {}
+            if oname.startswith("SLL") and m_rhsas:
                 g_pkg_items = []
                 for rid in m_rhsas:
                     for pv in (g_pkgs_map.get(rid) or []):
@@ -4194,9 +4266,22 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         if sll_mail:
             print(f"    SLL Mailer : {' | '.join(sll_mail)}")
         if missing_rhsas:
-            gap_urls = [f"https://access.redhat.com/errata/{r}" for r in missing_rhsas]
-            print(f"    {CLR_WARN}RH Gap Errata: {' | '.join(gap_urls)}{CLR_RESET}")
-            print(f"    {CLR_WARN}RHEL-SUSE Gap: {', '.join(missing_rhsas)} (released at Red Hat, not listed in SLL patches){CLR_RESET}")
+            by_v = (mit.get("sll_gap") or {}).get("by_version") or {}
+            active_vers = [vk for vk, vv in sorted(by_v.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999) if vv.get("missing_rhsas")]
+            if len(active_vers) > 1:
+                per_rel_urls = []
+                per_rel_txt = []
+                for vk in active_vers:
+                    vr = by_v[vk].get("missing_rhsas") or []
+                    v_urls = ", ".join("https://access.redhat.com/errata/{0}".format(r) for r in vr)
+                    per_rel_urls.append("SLL {0}: {1}".format(vk, v_urls))
+                    per_rel_txt.append("SLL {0} ({1})".format(vk, ", ".join(vr)))
+                print("    {0}RH Gap Errata: {1}{2}".format(CLR_WARN, " | ".join(per_rel_urls), CLR_RESET))
+                print("    {0}RHEL-SUSE Gap: {1} (released at Red Hat, not listed in SLL patches){2}".format(CLR_WARN, "; ".join(per_rel_txt), CLR_RESET))
+            else:
+                gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in missing_rhsas]
+                print("    {0}RH Gap Errata: {1}{2}".format(CLR_WARN, " | ".join(gap_urls), CLR_RESET))
+                print("    {0}RHEL-SUSE Gap: {1} (released at Red Hat, not listed in SLL patches){2}".format(CLR_WARN, ", ".join(missing_rhsas), CLR_RESET))
     if errors:
         print(f"\n  {CLR_WARN}Errors:{CLR_RESET} {', '.join(e['cve'] + ': ' + e['error'] for e in errors)}")
     print()
