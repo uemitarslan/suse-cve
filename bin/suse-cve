@@ -4119,13 +4119,53 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
 
     results = []
     errors = []
-    workers = min(6, max(1, len(cve_list)))
-    try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            outcomes = list(pool.map(_eval_one, cve_list))
-    finally:
-        sys.stdout = orig_out
-        sys.stderr = orig_err
+    sub_rels = [r.strip() for r in str(rel_arg or "").split(",") if r.strip()]
+    if len(sub_rels) > 1:
+        tasks = [(sr, c) for c in cve_list for sr in sub_rels]
+        def _eval_pair(pair):
+            sr, c = pair
+            buf = io.StringIO()
+            err_buf = io.StringIO()
+            tl_out.set_target(buf)
+            tl_err.set_target(err_buf)
+            try:
+                query(
+                    sr,
+                    c,
+                    status_filter,
+                    as_json=True,
+                    with_mitigation=(True if config_mode else with_mitigation),
+                    config_mode=None,
+                    force_workaround=force_workaround,
+                    view_mode=view_mode,
+                    allow_prompt=False,
+                )
+            except SystemExit as exc:
+                if exc.code not in (0, None):
+                    err_msg = err_buf.getvalue().strip() or f"Exited with code {exc.code}"
+                    return ("err", {"cve": c, "error": err_msg})
+            finally:
+                tl_out.clear_target()
+                tl_err.clear_target()
+            raw_out = buf.getvalue().strip()
+            if raw_out:
+                return ("ok", json.loads(raw_out))
+            return ("err", {"cve": c, "error": "Empty response"})
+        workers = min(6, max(1, len(tasks)))
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                outcomes = list(pool.map(_eval_pair, tasks))
+        finally:
+            sys.stdout = orig_out
+            sys.stderr = orig_err
+    else:
+        workers = min(6, max(1, len(cve_list)))
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                outcomes = list(pool.map(_eval_one, cve_list))
+        finally:
+            sys.stdout = orig_out
+            sys.stderr = orig_err
 
     for kind, payload in outcomes:
         if kind == "ok":
