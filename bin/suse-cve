@@ -2087,9 +2087,19 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     for mv in p_vers:
                         if mv in suse_rhsas_by_ver:
                             suse_rhsas_by_ver[mv].add(pid)
-                else:
-                    for v in target_vers:
-                        suse_rhsas_by_ver[v].add(pid)
+
+        for st_key, prod_map in (raw_status_map or {}).items():
+            if not isinstance(prod_map, dict):
+                continue
+            for prod_str in prod_map.keys():
+                m_rh = re.search(r"RHSA-\d{4}:\d+", str(prod_str))
+                if not m_rh:
+                    continue
+                pid = m_rh.group(0)
+                p_vers = _prod_major_vers(str(prod_str))
+                for mv in p_vers:
+                    if mv in suse_rhsas_by_ver:
+                        suse_rhsas_by_ver[mv].add(pid)
 
         rhel_rhsas_by_ver = {v: [] for v in target_vers}
         for x in rh_for_gap:
@@ -2110,7 +2120,16 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         for v in sorted(target_vers, key=lambda s: int(s) if s.isdigit() else 999):
             v_suse = sorted(suse_rhsas_by_ver.get(v) or set())
             v_rhel = list(rhel_rhsas_by_ver.get(v) or [])
-            v_missing = [r for r in v_rhel if r not in set(v_suse)]
+            rel_map = (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {}
+            sll_rel_has_v = any(
+                re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(v) + r"\b", str(k), re.IGNORECASE)
+                and bool(pkgs)
+                for k, pkgs in rel_map.items()
+            )
+            if sll_rel_has_v and not v_suse:
+                v_missing = []
+            else:
+                v_missing = [r for r in v_rhel if r not in set(v_suse)]
             v_gap_pkgs = {}
             for r_id in v_missing:
                 pkgs_for_r = sorted({
