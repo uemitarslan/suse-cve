@@ -1557,14 +1557,21 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 del raw_status_map[lower_st]
 
     if web_ok and "AFFECTED" in raw_status_map:
+        def _strip_var(pname: str) -> str:
+            return re.sub(r"-(?:LTSS|ESPOS|TERADATA|BCL)$", "", pname, flags=re.IGNORECASE)
         web_open_prods = (
             set(web_map.get("AFFECTED", {}).keys())
             | set(web_map.get("IN QA", {}).keys())
             | set(web_map.get("IN PROGRESS", {}).keys())
         )
-        for p_rel in web_map.get("RELEASED", {}).keys():
-            if p_rel not in web_open_prods and p_rel in raw_status_map["AFFECTED"]:
-                del raw_status_map["AFFECTED"][p_rel]
+        web_open_bases = {_strip_var(p) for p in web_open_prods}
+        web_rel_bases = {
+            _strip_var(p) for p in web_map.get("RELEASED", {}).keys()
+            if p not in web_open_prods and _strip_var(p) not in web_open_bases
+        }
+        for p_aff in list(raw_status_map["AFFECTED"].keys()):
+            if p_aff not in web_open_prods and _strip_var(p_aff) in web_rel_bases:
+                del raw_status_map["AFFECTED"][p_aff]
         if not raw_status_map["AFFECTED"]:
             del raw_status_map["AFFECTED"]
 
@@ -3763,7 +3770,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         p_clean = re.sub(r"^Container\s+", "", prod).strip()
         if p_clean.lower().startswith("opensuse "):
             return p_clean
-        m_bci = re.match(r"^(bci/[a-zA-Z0-9_\-]+)", p_clean, re.IGNORECASE)
+        m_bci = re.match(r"^(bci/[a-zA-Z0-9_\-.:]+)", p_clean, re.IGNORECASE)
         if m_bci:
             return f"BCI {m_bci.group(1).lower()}"
         m_suma = re.search(r"SUSE\s+(?:Multi-Linux\s+)?Manager\s+(Server|Proxy|Retail\s+Branch\s+Server)(?:\s+LTS)?\s+(\d+\.\d+)", p_clean, re.IGNORECASE)
