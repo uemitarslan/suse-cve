@@ -4318,18 +4318,6 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 elif rsp:
                     allowed_tags.add(f" {rm} sp{rsp}")
 
-        req_rel_raw = str(item.get("release") or "").strip()
-        allowed_tags = set()
-        if req_rel_raw and req_rel_raw.upper() != "ALL":
-            for r_part in [x.strip() for x in req_rel_raw.split(",") if x.strip()]:
-                rm, rsp, _ = build_platform_regex(r_part)
-                if rm.startswith("MICRO") and rsp:
-                    allowed_tags.add(f"micro {rm.replace('MICRO', '')}.{rsp}")
-                elif rm == "16":
-                    allowed_tags.add(f" 16.{rsp if rsp else '0'}")
-                elif rsp:
-                    allowed_tags.add(f" {rm} sp{rsp}")
-
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
             oname_l = oname.lower()
             if oname_l.startswith("opensuse"):
@@ -4490,7 +4478,10 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
     for cve_id, pure_bz, sll_mail, rh_errata, gap_info in link_blocks:
         if not cve_id:
             continue
-        entry = merged_links.setdefault(cve_id, {"bz": [], "mail": [], "errata": [], "missing": []})
+        entry = merged_links.setdefault(cve_id, {"bz": [], "mail": [], "errata": [], "missing": [], "by_version": {}})
+        for vk, vv in ((gap_info.get("by_version") or {}).items()):
+            if vv.get("missing_rhsas") and vk not in entry["by_version"]:
+                entry["by_version"][vk] = vv
         for u in (pure_bz or []):
             if u not in entry["bz"]:
                 entry["bz"].append(u)
@@ -4508,17 +4499,21 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         sll_mail = entry["mail"]
         rh_errata = entry["errata"]
         missing_rhsas = entry["missing"]
+        def _fmt_urls(urls, limit=5):
+            if len(urls) <= limit:
+                return " | ".join(urls)
+            return " | ".join(urls[:limit]) + f" (+{len(urls) - limit} more)"
         print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
         print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
         print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
         if rh_errata:
-            print(f"    RH Errata  : {' | '.join(rh_errata)}")
+            print(f"    RH Errata  : {_fmt_urls(rh_errata)}")
         if pure_bz:
-            print(f"    Bugzilla   : {' | '.join(pure_bz)}")
+            print(f"    Bugzilla   : {_fmt_urls(pure_bz)}")
         if sll_mail:
-            print(f"    SLL Mailer : {' | '.join(sll_mail)}")
+            print(f"    SLL Mailer : {_fmt_urls(sll_mail)}")
         if missing_rhsas and cve_id in sll_cves_in_matrix:
-            by_v = (mit.get("sll_gap") or {}).get("by_version") or {}
+            by_v = entry.get("by_version") or {}
             active_vers = [vk for vk, vv in sorted(by_v.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999) if vv.get("missing_rhsas")]
             if len(active_vers) > 1:
                 per_rel_urls = []
