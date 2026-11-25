@@ -1380,7 +1380,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     return sorted(releases)
 
 
-def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all', allow_prompt: bool = True, include_eol: bool = False):
+def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all', allow_prompt: bool = True, include_eol: bool = False, include_rhel_eus: bool = False):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -2034,13 +2034,21 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
             if m
         })
-        rh_for_gap = rh_sll_upstream if rh_sll_upstream else []
+        def _match_rhel_ver(prod_name: str, v_str: str) -> bool:
+            p_clean = (prod_name or "").strip()
+            if include_rhel_eus:
+                return bool(re.search(rf"Red Hat Enterprise Linux {re.escape(v_str)}\b", p_clean, re.IGNORECASE))
+            return bool(re.fullmatch(rf"Red Hat Enterprise Linux {re.escape(v_str)}", p_clean, re.IGNORECASE))
+
+        rh_for_gap = [
+            x for x in (rh_sll_upstream if rh_sll_upstream else [])
+            if any(_match_rhel_ver(x.get("product", ""), v) for v in target_vers)
+        ]
         if not rh_for_gap and target_vers:
             rh_raw = fetch_redhat_intel(cve)
             for v in target_vers:
-                v_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(v)}\b", re.IGNORECASE)
                 for ar in rh_raw.get("affected_release", []):
-                    if v_re.search(ar.get("product_name", "")):
+                    if _match_rhel_ver(ar.get("product_name", ""), v):
                         rh_for_gap.append({
                             "sll_ver": v,
                             "state": "RELEASED_UPSTREAM",
@@ -4155,7 +4163,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
     print()
 
 
-def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False, include_eol=False):
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False, include_eol=False, include_rhel_eus=False):
     """Parallel batch orchestrator executing up to 8 concurrent CVE queries while preserving deterministic input order."""
     import io
 
@@ -4436,6 +4444,9 @@ if __name__ == "__main__":
     include_eol = any(a in ("--include-eol", "--eol") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--include-eol", "--eol", "--no-eol")]
 
+    include_rhel_eus = "--include-rhel-eus" in raw_args
+    raw_args = [a for a in raw_args if a != "--include-rhel-eus"]
+
     with_remediation = False
     for flag in ("--remediate", "--fix"):
         if flag in raw_args:
@@ -4535,7 +4546,7 @@ if __name__ == "__main__":
             else:
                 cve_tokens.append(extra)
         batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
-        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus)
     else:
         first_cve_tok = raw_args[1]
         extra_tokens = raw_args[2:]
@@ -4546,9 +4557,9 @@ if __name__ == "__main__":
         try:
             if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or as_compact or only_open or only_kev or as_csv or as_markdown:
                 batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol)
+                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus)
             else:
-                query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
+                query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, include_rhel_eus=include_rhel_eus)
             sys.stdout.flush()
         except BrokenPipeError:
             os._exit(0)
