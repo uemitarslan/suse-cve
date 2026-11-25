@@ -2062,11 +2062,6 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             for item in plist
             if str(item.get("patch", "")).startswith("RHSA-")
         })
-        rhel_rhsas = sorted({
-            x.get("advisory", "").strip()
-            for x in rh_for_gap
-            if str(x.get("advisory", "")).startswith("RHSA-")
-        })
         def _prod_major_vers(prod_str):
             p = prod_str or ""
             found = []
@@ -2076,83 +2071,97 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     found.append(mv)
             return found
 
-        suse_rhsas_by_ver = {v: set() for v in target_vers}
-        for prod, plist in patch_map.items():
-            p_vers = _prod_major_vers(prod)
-            for p_obj in plist:
-                pid = (p_obj.get("patch") or "").strip()
-                if not pid.startswith("RHSA-"):
-                    continue
-                if p_vers:
-                    for mv in p_vers:
-                        if mv in suse_rhsas_by_ver:
-                            suse_rhsas_by_ver[mv].add(pid)
+        def _extract_stream_name(pkg_str):
+            s = (pkg_str or "").strip().lower()
+            if ":" in s:
+                return s.split(":", 1)[0].strip()
+            return ""
 
-        for st_key, prod_map in (raw_status_map or {}).items():
-            if not isinstance(prod_map, dict):
-                continue
-            for prod_str in prod_map.keys():
-                m_rh = re.search(r"RHSA-\d{4}:\d+", str(prod_str))
-                if not m_rh:
+        def _collect_rhel_sll_ref(items, vers):
+            ref = {v: {"rhsas": [], "streams_by_rhsa": {}} for v in vers}
+            all_rhsas = set()
+            for x in items:
+                adv = (x.get("advisory") or "").strip()
+                if not adv.startswith("RHSA-"):
                     continue
-                pid = m_rh.group(0)
-                p_vers = _prod_major_vers(str(prod_str))
-                for mv in p_vers:
-                    if mv in suse_rhsas_by_ver:
-                        suse_rhsas_by_ver[mv].add(pid)
+                all_rhsas.add(adv)
+                xv = (x.get("sll_ver") or "").strip()
+                if not xv:
+                    p_vers = _prod_major_vers(x.get("product") or "")
+                    xv = p_vers[0] if p_vers else ""
+                if xv not in ref:
+                    continue
+                if adv not in ref[xv]["rhsas"]:
+                    ref[xv]["rhsas"].append(adv)
+                pkg_raw = (x.get("package") or x.get("pkg_norm") or "").strip()
+                st = _extract_stream_name(pkg_raw)
+                if st:
+                    ref[xv]["streams_by_rhsa"].setdefault(adv, set()).add(st)
+            return sorted(all_rhsas), ref
 
-        # Associate SUSE-recorded RHSA IDs with SLL major versions that have RELEASED entries,
-        # while keeping unaddressed RHEL streams/errata (e.g., SLL 9 php 8.2/8.4 vs. php 8.0) as gaps.
-        for _v in target_vers:
-            if suse_rhsas_by_ver.get(_v):
-                continue
-            _has_v_rel = any(
-                re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(_v) + r"\b", str(_k), re.IGNORECASE)
-                and bool(_pkgs)
-                for _m in (
-                    (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {},
-                    (raw_status_map.get("RELEASED") if isinstance(raw_status_map, dict) else None) or {},
-                )
-                if isinstance(_m, dict)
-                for _k, _pkgs in _m.items()
-            )
-            if not _has_v_rel:
-                continue
-            _v_pkgs = set()
-            for _m in (
-                (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {},
-                (raw_status_map.get("RELEASED") if isinstance(raw_status_map, dict) else None) or {},
+        def _collect_suse_sll_cov(vers, suse_all_rhsas, p_map, raw_map, out_dict, rhel_ref):
+            cov = {v: set() for v in vers}
+            for prod, plist in (p_map or {}).items():
+                p_vers = _prod_major_vers(prod)
+                for p_obj in plist or []:
+                    pid = (p_obj.get("patch") or "").strip()
+                    if pid.startswith("RHSA-"):
+                        for mv in p_vers:
+                            if mv in cov:
+                                cov[mv].add(pid)
+            if isinstance(raw_map, dict):
+                for prod_map in raw_map.values():
+                    if not isinstance(prod_map, dict):
+                        continue
+                    for prod_str in prod_map.keys():
+                        m_rh = re.search(r"RHSA-\d{4}:\d+", str(prod_str))
+                        if m_rh:
+                            for mv in _prod_major_vers(str(prod_str)):
+                                if mv in cov:
+                                    cov[mv].add(m_rh.group(0))
+
+            rel_dicts = []
+            for d in (
+                (out_dict.get("RELEASED") if isinstance(out_dict, dict) else None),
+                (raw_map.get("RELEASED") if isinstance(raw_map, dict) else None),
             ):
-                if isinstance(_m, dict):
-                    for _k, _pkgs in _m.items():
-                        if re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(_v) + r"\b", str(_k), re.IGNORECASE):
-                            _v_pkgs.update(str(_x).strip() for _x in (_pkgs or set()) if str(_x).strip())
-            _v_streams = {
-                _pk.split(":")[0].lower()
-                for _pk in _v_pkgs
-                if ":" in _pk
-            }
-            for _rh_id in suse_rhsas:
-                _rh_items = [
-                    _x for _x in rh_for_gap
-                    if (_x.get("advisory") or "").strip() == _rh_id
-                    and (_x.get("sll_ver") or "") == _v
-                ]
-                if not _rh_items:
-                    suse_rhsas_by_ver[_v].add(_rh_id)
-                    continue
-                _covered = True
-                for _it in _rh_items:
-                    _raw_p = (_it.get("package") or _it.get("pkg_norm") or "").strip().lower()
-                    _stream = _raw_p.split(":")[0] if ":" in _raw_p else ""
-                    if _v_streams and _stream:
-                        if _stream not in _v_streams:
-                            _covered = False
-                            break
-                if _covered:
-                    suse_rhsas_by_ver[_v].add(_rh_id)
+                if isinstance(d, dict):
+                    rel_dicts.append(d)
 
-        rhel_rhsas_by_ver = {v: [] for v in target_vers}
+            for v in vers:
+                if cov[v]:
+                    continue
+                v_pkgs = set()
+                has_v_rel = False
+                for rd in rel_dicts:
+                    for k, pkgs in rd.items():
+                        if re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(v) + r"\b", str(k), re.IGNORECASE) and pkgs:
+                            has_v_rel = True
+                            v_pkgs.update(str(x).strip() for x in pkgs if str(x).strip())
+                if not has_v_rel:
+                    continue
+                rel_streams = {_extract_stream_name(pk) for pk in v_pkgs if _extract_stream_name(pk)}
+                streams_by_rhsa = (rhel_ref.get(v) or {}).get("streams_by_rhsa") or {}
+                for rh_id in suse_all_rhsas:
+                    rh_streams = streams_by_rhsa.get(rh_id) or set()
+                    if not rh_streams or not rel_streams or rh_streams.issubset(rel_streams):
+                        cov[v].add(rh_id)
+            return cov
+
+        suse_rhsas = sorted({
+            item.get("patch", "").strip()
+            for plist in sorted_patches.values()
+            for item in plist
+            if str(item.get("patch", "")).startswith("RHSA-")
+        })
+        rhel_rhsas, _rhel_ref_by_ver = _collect_rhel_sll_ref(rh_for_gap, target_vers)
+        suse_rhsas_by_ver = _collect_suse_sll_cov(
+            target_vers, suse_rhsas, patch_map, raw_status_map, output_dict, _rhel_ref_by_ver
+        )
+        rhel_rhsas_by_ver = {
+            v: list((_rhel_ref_by_ver.get(v) or {}).get("rhsas") or [])
+            for v in target_vers
+        }
         for x in rh_for_gap:
             adv = (x.get("advisory") or "").strip()
             if not adv:
