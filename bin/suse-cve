@@ -4350,7 +4350,8 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                         f"SL Micro {_m.replace('MICRO', '')}.{_sp}" if (_m.startswith("MICRO") and _sp)
                         else (f"SLES 16.{_sp if _sp else '0'}" if _m == "16"
                         else (f"SLES {_m} SP{_sp}" if (_m.isdigit() and _sp)
-                        else (f"SLES {_m}" if _m.isdigit() else _r)))
+                        else (f"SLES {_m}" if _m.isdigit()
+                        else (f"SLL {_m[3:]}" if _m.startswith("SLL") else _r))))
                     ))(*build_platform_regex(_r))
                 ) if _r and _r.upper() != "ALL" and "," not in _r else (_r or "ALL"))(str(item.get("release") or "ALL").strip()),
                 "status": "NOT AFFECTED",
