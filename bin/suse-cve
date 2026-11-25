@@ -2026,6 +2026,56 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     sorted_patches = {k: patch_map[k] for k in sorted(patch_map.keys())}
 
+    sll_gap = None
+    if major.startswith("SLL") or any("Liberty Linux" in k for k in list(sorted_patches.keys()) + list(web_all_prods)):
+        target_vers = [major[3:]] if major.startswith("SLL") else sorted({
+            m.group(1)
+            for p in list(sorted_patches.keys()) + list(web_all_prods)
+            for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
+            if m
+        })
+        rh_for_gap = rh_sll_upstream if rh_sll_upstream else []
+        if not rh_for_gap and target_vers:
+            rh_raw = fetch_redhat_intel(cve)
+            for v in target_vers:
+                v_re = re.compile(rf"Red Hat Enterprise Linux {re.escape(v)}\b", re.IGNORECASE)
+                for ar in rh_raw.get("affected_release", []):
+                    if v_re.search(ar.get("product_name", "")):
+                        rh_for_gap.append({
+                            "sll_ver": v,
+                            "state": "RELEASED_UPSTREAM",
+                            "product": ar.get("product_name", ""),
+                            "advisory": (ar.get("advisory") or "").strip(),
+                            "package": (ar.get("package") or "").strip(),
+                        })
+        suse_rhsas = sorted({
+            item.get("patch", "").strip()
+            for plist in sorted_patches.values()
+            for item in plist
+            if str(item.get("patch", "")).startswith("RHSA-")
+        })
+        rhel_rhsas = sorted({
+            x.get("advisory", "").strip()
+            for x in rh_for_gap
+            if str(x.get("advisory", "")).startswith("RHSA-")
+        })
+        missing_rhsas = [r for r in rhel_rhsas if r not in suse_rhsas]
+        errata_urls = [f"https://access.redhat.com/errata/{r}" for r in rhel_rhsas]
+        sll_gap = {
+            "target_versions": target_vers,
+            "suse_rhsas": suse_rhsas,
+            "rhel_rhsas": rhel_rhsas,
+            "missing_rhsas": missing_rhsas,
+            "has_gap": bool(missing_rhsas),
+            "errata_urls": errata_urls,
+        }
+        if mitigation_data is not None:
+            mitigation_data["sll_gap"] = sll_gap
+            for u in errata_urls:
+                if u not in mitigation_data.get("bugzilla", []):
+                    mitigation_data.setdefault("bugzilla", []).append(u)
+
+
     if as_json:
         payload = {
             "cve": cve,
@@ -2039,6 +2089,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         }
         if mitigation_data:
             payload["mitigation"] = mitigation_data
+        if sll_gap is not None:
+            payload["sll_gap"] = sll_gap
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
@@ -3988,7 +4040,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             if st_label == "UPSTREAM ONLY" and pids:
                 patch_col = f"Upstream: {pids[0]}" + (f" (+{len(pids)-1})" if len(pids) > 1 else "")
             elif pids:
-                if len(pids) <= 2 and sum(len(x) for x in pids) <= 44:
+                if len(pids) <= 4 and sum(len(x) for x in pids) <= 72:
                     patch_col = ", ".join(pids)
                 else:
                     patch_col = f"{pids[0]} (+{len(pids)-1})"
@@ -4030,7 +4082,9 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         bz_list = mit.get("bugzilla") or []
         pure_bz = [u for u in bz_list if "bugzilla.suse.com" in u]
         sll_mail = [u for u in bz_list if "lists.suse.com" in u]
-        link_blocks.append((cve_id, pure_bz, sll_mail))
+        rh_errata = [u for u in bz_list if "access.redhat.com/errata/" in u]
+        gap_info = mit.get("sll_gap") or item.get("sll_gap") or {}
+        link_blocks.append((cve_id, pure_bz, sll_mail, rh_errata, gap_info))
 
     if results:
         m0 = results[0].get("meta") or {}
@@ -4064,26 +4118,38 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
 
     print("  " + "-" * (len(hdr) - 2))
     merged_links = {}
-    for cve_id, pure_bz, sll_mail in link_blocks:
+    for cve_id, pure_bz, sll_mail, rh_errata, gap_info in link_blocks:
         if not cve_id:
             continue
-        entry = merged_links.setdefault(cve_id, {"bz": [], "mail": []})
+        entry = merged_links.setdefault(cve_id, {"bz": [], "mail": [], "errata": [], "missing": []})
         for u in (pure_bz or []):
             if u not in entry["bz"]:
                 entry["bz"].append(u)
         for u in (sll_mail or []):
             if u not in entry["mail"]:
                 entry["mail"].append(u)
+        for u in (rh_errata or []):
+            if u not in entry["errata"]:
+                entry["errata"].append(u)
+        for m_id in (gap_info.get("missing_rhsas") or []):
+            if m_id not in entry["missing"]:
+                entry["missing"].append(m_id)
     for cve_id, entry in merged_links.items():
         pure_bz = entry["bz"]
         sll_mail = entry["mail"]
+        rh_errata = entry["errata"]
+        missing_rhsas = entry["missing"]
         print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
         print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
         print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
+        if rh_errata:
+            print(f"    RH Errata  : {' | '.join(rh_errata)}")
         if pure_bz:
             print(f"    Bugzilla   : {' | '.join(pure_bz)}")
         if sll_mail:
             print(f"    SLL Mailer : {' | '.join(sll_mail)}")
+        if missing_rhsas:
+            print(f"    {CLR_WARN}RHEL-SUSE Gap: {', '.join(missing_rhsas)} (released at Red Hat, not listed in SLL patches){CLR_RESET}")
     if errors:
         print(f"\n  {CLR_WARN}Errors:{CLR_RESET} {', '.join(e['cve'] + ': ' + e['error'] for e in errors)}")
     print()
