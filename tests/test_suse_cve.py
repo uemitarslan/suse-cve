@@ -341,4 +341,22 @@ rc_gc_s, out_gc_s, _ = run_cli("15sp7", "CVE-2025-22871,CVE-2024-21626", "--miti
 gc_s_doc = _yaml.safe_load(out_gc_s) if rc_gc_s == 0 else None
 check(rc_gc_s == 0 and isinstance(gc_s_doc, dict), "Go/Container --salt-config produces valid YAML parseable by PyYAML")
 
+rc_cmp, out_cmp, _ = run_cli("CVE-2026-129289", "--compact")
+check(
+    rc_cmp == 0
+    and "OS / RELEASE" in out_cmp
+    and "LIFECYCLE / ACTION" in out_cmp
+    and "EOL ->" not in out_cmp
+    and "SLES 15 SP7" in out_cmp,
+    "--compact hides EOL rows by default and renders active OS/container matrix"
+)
+
+rc_cmp_eol, out_cmp_eol, _ = run_cli("CVE-2026-129289", "--compact", "--include-eol")
+check(
+    rc_cmp_eol == 0
+    and "EOL ->" in out_cmp_eol
+    and "SLES 15 SP1" in out_cmp_eol,
+    "--compact --include-eol restores End-of-Life rows for audit view"
+)
+
 print("\nALL 14 TEST SUITES PASSED.")

@@ -1325,7 +1325,7 @@ def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict
     return sorted(releases)
 
 
-def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all', allow_prompt: bool = True):
+def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool = False, with_mitigation: bool = False, config_mode: str = None, force_workaround: bool = False, view_mode: str = 'all', allow_prompt: bool = True, include_eol: bool = False):
     if not os.path.exists(DB_PATH):
         if as_json:
             print(json.dumps({"error": "Local database not found. Run 'suse-cve --sync' first."}))
@@ -1335,7 +1335,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             ans = input("Download and build initial OVAL index now? [Y/n]: ").strip().lower()
             if ans in ("", "y", "yes"):
                 sync_oval_files()
-                return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
+                return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False, include_eol=include_eol)
         sys.exit(1)
 
     cve = cve_arg.strip().rstrip(".,;:").upper()
@@ -1376,7 +1376,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
         if ans in ("y", "yes"):
             sync_oval_files()
-            return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False)
+            return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False, include_eol=include_eol)
         print()
 
     target_status = None
@@ -1684,6 +1684,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
+    no_eol = (major == "ALL" and not include_eol)
     if no_eol:
         affected_releases = [
             r for r in affected_releases
@@ -3701,7 +3702,7 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
     ])
     return "\n".join(lines)
 
-def render_compact_os_matrix(results: list, errors: list = None, no_eol: bool = False):
+def render_compact_os_matrix(results: list, errors: list = None, include_eol: bool = False):
     """Render a compact 1-line-per-OS-release matrix with SUSE vs CNA/NVD scores, patch IDs, package counts, lifecycle, and links."""
     def _norm_os(prod: str) -> str:
         p_clean = re.sub(r"^Container\s+", "", prod).strip()
@@ -3877,7 +3878,7 @@ def render_compact_os_matrix(results: list, errors: list = None, no_eol: bool = 
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
             if oname.lower().startswith("opensuse"):
                 continue
-            if no_eol and _os_lifecycle(oname) == "EOL":
+            if not include_eol and _os_lifecycle(oname) == "EOL":
                 continue
             b = os_buckets[oname]
             rel_n = len(b["rel_pkgs"])
@@ -4004,7 +4005,7 @@ def render_compact_os_matrix(results: list, errors: list = None, no_eol: bool = 
     print()
 
 
-def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False):
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False, include_eol=False):
     """Parallel batch orchestrator executing up to 8 concurrent CVE queries while preserving deterministic input order."""
     import io
 
@@ -4127,11 +4128,11 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
         sys.exit(0 if results else 1)
 
     if as_markdown:
-        print(render_batch_markdown_report(rel_arg, summary, rows, filtered_results, errors, status_filter=status_filter, only_open=only_open, only_kev=only_kev))
+        print(render_batch_markdown_report(rel_arg, summary, rows, filtered_results, errors, status_filter=status_filter, only_open=only_open, only_kev=only_kev, include_eol=include_eol))
         sys.exit(0 if results else 1)
 
     if as_compact:
-        render_compact_os_matrix(filtered_results, errors=errors, no_eol=no_eol)
+        render_compact_os_matrix(filtered_results, errors=errors, include_eol=include_eol)
         sys.exit(0 if results else 1)
 
     if config_mode == "salt":
@@ -4242,9 +4243,8 @@ if __name__ == "__main__":
     as_compact = any(a in ("--compact", "-c") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--compact", "-c")]
 
-    no_eol = "--no-eol" in raw_args
-    if no_eol:
-        raw_args.remove("--no-eol")
+    include_eol = any(a in ("--include-eol", "--eol") for a in raw_args)
+    raw_args = [a for a in raw_args if a not in ("--include-eol", "--eol", "--no-eol")]
 
     with_remediation = False
     for flag in ("--remediate", "--fix"):
@@ -4301,8 +4301,8 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
-        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
         print("          suse-cve 15sp7 --file cves.txt --json                 (Batch triage from file with JSON)")
@@ -4312,7 +4312,8 @@ if __name__ == "__main__":
         print("          suse-cve 15sp7 CVE-2026-98432 --remediate --salt-config   (SaltStack patch state)")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --salt-config    (SaltStack workaround state)")
         print("          suse-cve 15sp7 CVE-2026-98432 --mitigate --ansible-config (Ansible workaround playbook)")
-        print("          suse-cve CVE-2026-129289 --compact --no-eol  (Compact matrix of all active SUSE products & BCI containers)")
+        print("          suse-cve CVE-2026-129289 --compact           (Compact matrix of active SUSE products & BCI containers)")
+        print("          suse-cve CVE-2026-129289 --compact --include-eol  (Include End-of-Life releases for audit)")
         print("          suse-cve sll9 CVE-2026-129289          (SUSE Liberty Linux 9 / RHSA cross-reference)")
         print("          suse-cve all CVE-2026-98432 rel --json")
         print("          suse-cve --sync   (Download OVAL dumps and rebuild local index)")
@@ -4344,7 +4345,7 @@ if __name__ == "__main__":
             else:
                 cve_tokens.append(extra)
         batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
-        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol)
     else:
         first_cve_tok = raw_args[1]
         extra_tokens = raw_args[2:]
@@ -4355,7 +4356,7 @@ if __name__ == "__main__":
         try:
             if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or as_compact or only_open or only_kev or as_csv or as_markdown:
                 batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev)
+                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol)
             else:
                 query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode)
             sys.stdout.flush()

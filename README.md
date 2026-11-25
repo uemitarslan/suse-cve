@@ -49,8 +49,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
-suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--no-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
 suse-cve --sync
 ```
 
@@ -68,7 +68,7 @@ suse-cve --sync
 | `--ansible-config` | No | Output an idempotent Ansible YAML playbook | `--mitigate --ansible-config` |
 | `--table`, `-t` | No | Render compact executive triage table even for a single CVE | `--table` |
 | `--compact`, `-c` | No | Render 1-line-per-OS-release matrix with SUSE/CNA/NVD scores, patch IDs, package counts & lifecycle | `--compact` |
-| `--no-eol` | No | Hide End-of-Life (EOL) rows in `--compact` matrix view to focus on supported releases | `--compact --no-eol` |
+| `--include-eol`, `--eol` | No | Include End-of-Life (EOL) releases in `all` / `--compact` views (hidden by default) | `--compact --include-eol` |
 | `--only-open` | No | In batch mode, show only open/pending CVEs (exclude `PATCHED` & `NOT AFFECTED`) | `--only-open` |
 | `--only-kev` | No | In batch mode, show only CVEs listed in the CISA KEV catalog | `--only-kev` |
 | `--json` | No | Emit structured JSON for CI/CD pipelines and automation | `--json` |
@@ -85,13 +85,13 @@ suse-cve --sync
 suse-cve 15sp7 CVE-2026-98432
 ```
 
-### 2. Compact Matrix Across All Active SUSE Products & BCI Containers (`--compact --no-eol`)
+### 2. Compact Matrix Across Active SUSE Products & BCI Containers (`--compact`)
 ```bash
-# Full matrix (active releases prioritized at top, EOL block at bottom)
+# Active / supported releases and BCI containers (EOL releases hidden by default)
 suse-cve CVE-2026-129289 --compact
 
-# Active / supported releases and BCI containers only
-suse-cve CVE-2026-129289 --compact --no-eol
+# Full audit matrix including End-of-Life releases
+suse-cve CVE-2026-129289 --compact --include-eol
 ```
 
 ### 3. Check an End-of-Life or LTSS Release
