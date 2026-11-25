@@ -22,6 +22,121 @@ DATA_DIR = "/var/cache/suse-cve"
 DB_PATH = os.path.join(DATA_DIR, "suse_cve.db")
 STALE_THRESHOLD_HOURS = 48
 
+_DIFF_SNAP_DIR = os.path.join(DATA_DIR, "diff_snapshots")
+
+def _build_cve_diff_snapshot(cve_id, rel_arg, output_dict, sorted_patches, sll_gap, meta_payload, rows=None):
+    prod_state = {}
+    if isinstance(output_dict, dict) and output_dict:
+        for st_name, prod_map in output_dict.items():
+            if not isinstance(prod_map, dict):
+                continue
+            for prod_name, pkgs in prod_map.items():
+                p_list = sorted({
+                    str(x.get("patch")).strip()
+                    for x in ((sorted_patches or {}).get(prod_name) or [])
+                    if isinstance(x, dict) and str(x.get("patch") or "").strip()
+                })
+                prod_state[str(prod_name)] = {
+                    "status": str(st_name),
+                    "patches": p_list,
+                    "pkg_count": len(pkgs) if isinstance(pkgs, (list, dict, set)) else 0,
+                }
+    elif isinstance(rows, list) and rows:
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            prod_name = str(r.get("os_release") or r.get("release") or r.get("product") or "").strip()
+            if not prod_name:
+                continue
+            p_raw = r.get("patches") or r.get("patch_ids") or []
+            if isinstance(p_raw, str):
+                p_list = sorted(x.strip() for x in p_raw.split(",") if x.strip() and x.strip() != "—")
+            elif isinstance(p_raw, (list, set, tuple)):
+                p_list = sorted(str(x).strip() for x in p_raw if str(x).strip() and str(x).strip() != "—")
+            else:
+                p_list = []
+            prod_state[prod_name] = {
+                "status": str(r.get("status") or ""),
+                "patches": p_list,
+                "pkg_count": int(r.get("rel_pkgs") or 0) + int(r.get("open_pkgs") or 0),
+            }
+    gap_state = {}
+    if isinstance(sll_gap, dict):
+        gap_state = {
+            "has_gap": bool(sll_gap.get("has_gap")),
+            "missing_rhsas": sorted(str(x) for x in (sll_gap.get("missing_rhsas") or [])),
+            "gap_packages": sorted(str(x) for x in (sll_gap.get("gap_packages") or [])),
+        }
+    return {
+        "cve": str(cve_id),
+        "release": str(rel_arg or "all"),
+        "oval_timestamp": (meta_payload or {}).get("oval_timestamp"),
+        "web_last_modified": (meta_payload or {}).get("web_last_modified"),
+        "products": prod_state,
+        "sll_gap": gap_state,
+    }
+
+def _compute_and_save_diff(cve_id, rel_arg, current_snap):
+    safe_rel = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(rel_arg or "all").strip().lower())
+    os.makedirs(_DIFF_SNAP_DIR, exist_ok=True)
+    snap_path = os.path.join(_DIFF_SNAP_DIR, f"{cve_id}__{safe_rel}.json")
+    prev_snap = None
+    if os.path.isfile(snap_path):
+        try:
+            with open(snap_path, encoding="utf-8") as fh:
+                prev_snap = json.load(fh)
+        except Exception:
+            prev_snap = None
+    with open(snap_path, "w", encoding="utf-8") as fh:
+        json.dump(current_snap, fh, indent=2, sort_keys=True)
+
+    if not prev_snap:
+        return {"has_baseline": False, "changes": [], "snapshot_path": snap_path}
+
+    changes = []
+    prev_prods = prev_snap.get("products") or {}
+    curr_prods = current_snap.get("products") or {}
+    for prod in sorted(set(prev_prods.keys()) | set(curr_prods.keys())):
+        old_p = prev_prods.get(prod)
+        new_p = curr_prods.get(prod)
+        if old_p is None and new_p is not None:
+            changes.append(f"+ {prod}: neu ({new_p.get('status')})")
+        elif new_p is None and old_p is not None:
+            changes.append(f"- {prod}: entfernt (war {old_p.get('status')})")
+        else:
+            if old_p.get("status") != new_p.get("status"):
+                changes.append(f"~ {prod}: Status {old_p.get('status')} -> {new_p.get('status')}")
+            old_patches = set(old_p.get("patches") or [])
+            new_patches = set(new_p.get("patches") or [])
+            added_patches = sorted(new_patches - old_patches)
+            removed_patches = sorted(old_patches - new_patches)
+            if added_patches:
+                changes.append(f"+ {prod}: neue Patches {', '.join(added_patches)}")
+            if removed_patches:
+                changes.append(f"- {prod}: entfallene Patches {', '.join(removed_patches)}")
+
+    old_gap = prev_snap.get("sll_gap") or {}
+    new_gap = current_snap.get("sll_gap") or {}
+    old_miss = set(old_gap.get("missing_rhsas") or [])
+    new_miss = set(new_gap.get("missing_rhsas") or [])
+    if sorted(new_miss - old_miss):
+        changes.append(f"+ SLL Gap neue RHSAs: {', '.join(sorted(new_miss - old_miss))}")
+    if sorted(old_miss - new_miss):
+        changes.append(f"- SLL Gap geschlossene RHSAs: {', '.join(sorted(old_miss - new_miss))}")
+    old_gpkgs = set(old_gap.get("gap_packages") or [])
+    new_gpkgs = set(new_gap.get("gap_packages") or [])
+    if old_gpkgs != new_gpkgs and not (new_miss - old_miss) and not (old_miss - new_miss):
+        changes.append(f"~ SLL Gap Pakete geändert ({len(old_gpkgs)} -> {len(new_gpkgs)})")
+
+    return {
+        "has_baseline": True,
+        "prev_oval_timestamp": prev_snap.get("oval_timestamp"),
+        "prev_web_last_modified": prev_snap.get("web_last_modified"),
+        "changes": changes,
+        "snapshot_path": snap_path,
+    }
+
+
 OVAL_URLS = [
     "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.16.xml.bz2",
     "https://ftp.suse.com/pub/projects/security/oval/suse.linux.enterprise.16-affected.xml.bz2",
@@ -2319,6 +2434,9 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             payload["mitigation"] = mitigation_data
         if sll_gap is not None:
             payload["sll_gap"] = sll_gap
+        if diff_sync:
+            _snap = _build_cve_diff_snapshot(cve, rel_arg, output_dict, sorted_patches, sll_gap, meta_payload)
+            payload["diff_sync"] = _compute_and_save_diff(cve, rel_arg, _snap)
         print(json.dumps(payload, indent=2))
         sys.exit(0)
 
@@ -4168,7 +4286,7 @@ def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filter
     ])
     return "\n".join(lines)
 
-def render_compact_os_matrix(results: list, errors: list = None, include_eol: bool = False):
+def render_compact_os_matrix(results: list, errors: list = None, include_eol: bool = False, diff_sync: bool = False):
     """Render a compact 1-line-per-OS-release matrix with SUSE vs CNA/NVD scores, patch IDs, package counts, lifecycle, and links."""
     def _norm_os(prod: str) -> str:
         p_clean = re.sub(r"^Container\s+", "", prod).strip()
@@ -4557,6 +4675,30 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             if len(urls) <= limit:
                 return " | ".join(urls)
             return " | ".join(urls[:limit]) + f" (+{len(urls) - limit} more)"
+        if diff_sync:
+            _cur_res = next((r for r in (results or []) if isinstance(r, dict) and r.get("cve") == cve_id), None)
+            _d_info = (_cur_res or {}).get("_diff_sync")
+            if not isinstance(_d_info, dict) and isinstance(_cur_res, dict):
+                _snap_fb = _build_cve_diff_snapshot(
+                    cve_id,
+                    _cur_res.get("release") or "all",
+                    _cur_res.get("results") or {},
+                    _cur_res.get("patches") or {},
+                    _cur_res.get("sll_gap"),
+                    _cur_res.get("meta") or {},
+                    rows=_cur_res.get("rows"),
+                )
+                _d_info = _compute_and_save_diff(cve_id, _cur_res.get("release") or "all", _snap_fb)
+            if isinstance(_d_info, dict):
+                print(f"\n  {CLR_BOLD}DIFF SYNC ({cve_id}):{CLR_RESET}")
+                if not _d_info.get("has_baseline"):
+                    print("    Basis-Snapshot angelegt (noch kein vorheriger Stand vorhanden).")
+                elif not _d_info.get("changes"):
+                    print(f"    Keine Änderungen seit OVAL {_d_info.get('prev_oval_timestamp') or '-'} / WEB {_d_info.get('prev_web_last_modified') or '-'}.")
+                else:
+                    for _ch in _d_info["changes"]:
+                        print(f"    {_ch}")
+
         print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
         print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
         print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
@@ -4588,7 +4730,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
     print()
 
 
-def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False, include_eol=False, include_rhel_eus=False):
+def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv=False, as_markdown=False, as_compact=False, with_mitigation=True, config_mode=None, force_workaround=False, view_mode="all", only_open=False, only_kev=False, include_eol=False, include_rhel_eus=False, diff_sync=False):
     """Parallel batch orchestrator executing up to 8 concurrent CVE queries while preserving deterministic input order."""
     import io
 
@@ -4679,6 +4821,19 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
 
     for kind, payload in outcomes:
         if kind == "ok":
+            if diff_sync and isinstance(payload, dict) and "_diff_sync" not in payload:
+                _p_cve = payload.get("cve") or ""
+                if _p_cve:
+                    _p_snap = _build_cve_diff_snapshot(
+                        _p_cve,
+                        payload.get("release") or rel_arg,
+                        payload.get("results") or {},
+                        payload.get("patches") or {},
+                        payload.get("sll_gap"),
+                        payload.get("meta") or {},
+                        rows=payload.get("rows"),
+                    )
+                    payload["_diff_sync"] = _compute_and_save_diff(_p_cve, payload.get("release") or rel_arg, _p_snap)
             results.append(payload)
         else:
             errors.append(payload)
@@ -4755,7 +4910,7 @@ def run_batch_query(rel_arg, cve_list, status_filter=None, as_json=False, as_csv
         sys.exit(0 if results else 1)
 
     if as_compact:
-        render_compact_os_matrix(filtered_results, errors=errors, include_eol=include_eol)
+        render_compact_os_matrix(filtered_results, errors=errors, include_eol=include_eol, diff_sync=diff_sync)
         sys.exit(0 if results else 1)
 
     if config_mode == "salt":
@@ -4867,6 +5022,8 @@ if __name__ == "__main__":
     include_eol = any(a in ("--include-eol", "--eol") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--include-eol", "--eol", "--no-eol")]
 
+    diff_sync = "--diff-sync" in raw_args
+    raw_args = [a for a in raw_args if a != "--diff-sync"]
     include_rhel_eus = "--include-rhel-eus" in raw_args
     raw_args = [a for a in raw_args if a != "--include-rhel-eus"]
 
@@ -4969,7 +5126,7 @@ if __name__ == "__main__":
             else:
                 cve_tokens.append(extra)
         batch_cves = extract_batch_cves(cve_tokens, file_path=batch_file)
-        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus)
+        run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus, diff_sync=diff_sync)
     else:
         first_cve_tok = raw_args[1]
         extra_tokens = raw_args[2:]
@@ -4980,7 +5137,7 @@ if __name__ == "__main__":
         try:
             if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_compact or only_open or only_kev or as_csv or as_markdown:
                 batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
-                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus)
+                run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus, diff_sync=diff_sync)
             else:
                 query(raw_args[0], first_cve_tok, filter_arg, as_json=as_json, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, include_rhel_eus=include_rhel_eus)
             sys.stdout.flush()
