@@ -1318,7 +1318,7 @@ def evaluate_release_lifecycle(sles_tag: str, lifecycle_map: dict) -> dict:
     }
 
 
-def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict) -> list:
+def summarize_affected_sles_releases(cve: str, web_all_prods: set, web_map: dict, patch_map: dict = None) -> list:
     """Return a clean sorted list of affected SLES major/minor releases (e.g. 'SLES 15 SP5', 'SLES 16.0')."""
     releases = set()
 
@@ -1745,7 +1745,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             }]
 
     lifecycle_map = load_sles_lifecycle()
-    affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
+    affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map, patch_map)
     no_eol = (major == "ALL" and not include_eol)
     if no_eol:
         affected_releases = [
