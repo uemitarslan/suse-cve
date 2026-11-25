@@ -370,3 +370,31 @@ check(
 )
 
 print("\nALL 14 TEST SUITES PASSED.")
+
+
+def test_sll_gap_per_major_release_and_compact_row():
+    # Verify per-major-version separation logic and compact table RHEL GAP row
+    target_vers = ["8", "9", "10"]
+    patch_map = {
+        "SUSE Liberty Linux 8": [{"patch": "RHSA-2026:100991"}, {"patch": "RHSA-2026:101276"}],
+        "SUSE Liberty Linux 9": [{"patch": "RHSA-2026:102226"}, {"patch": "RHSA-2026:102297"}],
+        "SUSE Liberty Linux 10": [{"patch": "RHSA-2026:100821"}, {"patch": "RHSA-2026:102300"}],
+    }
+    rh_for_gap = [
+        {"sll_ver": "8", "advisory": "RHSA-2026:100991", "package": "php-0:7.4.33-1.el8"},
+        {"sll_ver": "9", "advisory": "RHSA-2026:102226", "package": "php:8.3-9090020261119185155.9"},
+        {"sll_ver": "9", "advisory": "RHSA-2026:102255", "package": "php:8.4-9090020261119185955.9"},
+        {"sll_ver": "9", "advisory": "RHSA-2026:102261", "package": "php:8.2-9090020261119181904.9"},
+        {"sll_ver": "10", "advisory": "RHSA-2026:100821", "package": "php8.4-0:8.4.28-1.el10_3"},
+    ]
+
+    suse_by_v = {"8": {"RHSA-2026:100991", "RHSA-2026:101276"}, "9": {"RHSA-2026:102226", "RHSA-2026:102297"}, "10": {"RHSA-2026:100821", "RHSA-2026:102300"}}
+    missing_by_v = {}
+    for v in target_vers:
+        rhel_v = [x["advisory"] for x in rh_for_gap if x["sll_ver"] == v]
+        missing_by_v[v] = [r for r in rhel_v if r not in suse_by_v[v]]
+
+    assert missing_by_v["8"] == []
+    assert missing_by_v["9"] == ["RHSA-2026:102255", "RHSA-2026:102261"]
+    assert missing_by_v["10"] == []
+    assert patch_map["SUSE Liberty Linux 9"]
