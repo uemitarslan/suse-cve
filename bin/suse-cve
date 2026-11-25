@@ -4063,9 +4063,20 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         print(f"  {r['cve']:<{w_cve}}  {r['suse_score']:<{w_ss}}  {r['cna_score']:<{w_cs}}  {CLR_BOLD}{r['os']:<{w_os}}{CLR_RESET}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['patches']:<{w_pa}}  {r['pkgs']:<{w_pk}}  {r['action']}")
 
     print("  " + "-" * (len(hdr) - 2))
+    merged_links = {}
     for cve_id, pure_bz, sll_mail in link_blocks:
         if not cve_id:
             continue
+        entry = merged_links.setdefault(cve_id, {"bz": [], "mail": []})
+        for u in (pure_bz or []):
+            if u not in entry["bz"]:
+                entry["bz"].append(u)
+        for u in (sll_mail or []):
+            if u not in entry["mail"]:
+                entry["mail"].append(u)
+    for cve_id, entry in merged_links.items():
+        pure_bz = entry["bz"]
+        sll_mail = entry["mail"]
         print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
         print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
         print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
