@@ -2360,7 +2360,10 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         lc_color = c_aff_b if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else c_rel)
         print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{target_lifecycle['label']}{CLR_RESET}")
 
-    print(f"  {CLR_BOLD}Release Status ({rel_arg})     :{CLR_RESET} {st_color}{triage_status}{CLR_RESET}")
+    status_scope = target_sles_tag if ("," in str(rel_arg or "") and target_sles_tag) else rel_arg
+    print(f"  {CLR_BOLD}Release Status ({status_scope}) :{CLR_RESET} {st_color}{triage_status}{CLR_RESET}")
+    if "," in str(rel_arg or "") and target_sles_tag:
+        print(f"  {CLR_DIM}Note: 'Affected (...)' lists all SLES/Micro releases for this CVE. Details/workarounds below cover {target_sles_tag} only; use --compact for each target.{CLR_RESET}")
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
         print(f"  {c_aff_b}[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.{CLR_RESET}")
