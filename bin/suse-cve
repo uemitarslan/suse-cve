@@ -2309,13 +2309,13 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     print(f"{CLR_MAG}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
     if affected_releases:
         if active_supported_releases:
-            print(f"  {CLR_BOLD}CVE-weit betroffen (Support) :{CLR_RESET} {c_aff}{', '.join(active_supported_releases)}{CLR_RESET}")
+            print(f"  {CLR_BOLD}CVE-Wide Affected (Support) :{CLR_RESET} {c_aff}{', '.join(active_supported_releases)}{CLR_RESET}")
         if ltss_releases:
-            print(f"  {CLR_BOLD}CVE-weit betroffen (LTSS)    :{CLR_RESET} {c_qa}{', '.join(ltss_releases)}{CLR_RESET}")
+            print(f"  {CLR_BOLD}CVE-Wide Affected (LTSS)    :{CLR_RESET} {c_qa}{', '.join(ltss_releases)}{CLR_RESET}")
         if eol_releases:
-            print(f"  {CLR_BOLD}CVE-weit betroffen (EOL)     :{CLR_RESET} {c_aff_b}{', '.join(eol_releases)}{CLR_RESET}")
+            print(f"  {CLR_BOLD}CVE-Wide Affected (EOL)     :{CLR_RESET} {c_aff_b}{', '.join(eol_releases)}{CLR_RESET}")
     else:
-        print(f"  {CLR_BOLD}CVE-weit betroffen (SLES)    :{CLR_RESET} {c_na}None detected across SLES 12/15/16{CLR_RESET}")
+        print(f"  {CLR_BOLD}CVE-Wide Affected (SLES)    :{CLR_RESET} {c_na}None detected across SLES 12/15/16{CLR_RESET}")
 
     if major == "ALL":
         if patched_releases_list:
@@ -2325,7 +2325,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         if open_releases_list:
             print(f"  {CLR_BOLD}Open / Unpatched Releases  :{CLR_RESET} {c_aff}{', '.join(open_releases_list)}{CLR_RESET}")
     if not_affected_releases_list:
-        print(f"  {CLR_BOLD}CVE-weit nicht betroffen     :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
+        print(f"  {CLR_BOLD}CVE-Wide Not Affected       :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
 
     multi_target_lcs = []
     if "," in str(rel_arg or ""):
@@ -2363,7 +2363,11 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     status_scope = target_sles_tag if ("," in str(rel_arg or "") and target_sles_tag) else rel_arg
     print(f"  {CLR_BOLD}Release Status ({status_scope}) :{CLR_RESET} {st_color}{triage_status}{CLR_RESET}")
     if "," in str(rel_arg or "") and target_sles_tag:
-        print(f"  {CLR_DIM}Hinweis: 'CVE-weit betroffen' zeigt alle SLES/Micro-Releases der CVE. Tabelle, Pakete und Workarounds unten gelten nur für {target_sles_tag} (einzeln pro Release mit --compact).{CLR_RESET}")
+        print(
+            f"  {CLR_DIM}Scope: Top status, packages, and workarounds cover primary target {target_sles_tag} only "
+            f"(not affected here). 'CVE-Wide Affected/Not Affected' lists all SLES/Micro releases for the CVE "
+            f"(e.g. SLES 15 SP7 may be affected while {target_sles_tag} is not). Use --compact for per-target triage.{CLR_RESET}"
+        )
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
         print(f"  {c_aff_b}[!] LIFECYCLE ALERT        : {target_sles_tag} is End-of-Life — no upstream patches will be provided! Upgrade or apply mitigations.{CLR_RESET}")
