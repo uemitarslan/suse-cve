@@ -1501,6 +1501,18 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             if not raw_status_map[lower_st]:
                 del raw_status_map[lower_st]
 
+    if web_ok and "AFFECTED" in raw_status_map:
+        web_open_prods = (
+            set(web_map.get("AFFECTED", {}).keys())
+            | set(web_map.get("IN QA", {}).keys())
+            | set(web_map.get("IN PROGRESS", {}).keys())
+        )
+        for p_rel in web_map.get("RELEASED", {}).keys():
+            if p_rel not in web_open_prods and p_rel in raw_status_map["AFFECTED"]:
+                del raw_status_map["AFFECTED"][p_rel]
+        if not raw_status_map["AFFECTED"]:
+            del raw_status_map["AFFECTED"]
+
     if web_ok and "RELEASED" in raw_status_map:
         na_pkgs_by_ver = {}
         for na_p, na_pkgs in web_map.get("NOT AFFECTED", {}).items():
@@ -1672,6 +1684,11 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
 
     lifecycle_map = load_sles_lifecycle()
     affected_releases = summarize_affected_sles_releases(cve, web_all_prods, web_map)
+    if no_eol:
+        affected_releases = [
+            r for r in affected_releases
+            if evaluate_release_lifecycle(r, lifecycle_map)["state"] != "EOL"
+        ]
 
     active_supported_releases = []
     ltss_releases = []
