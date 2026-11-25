@@ -4333,7 +4333,14 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 "cve": cve_id,
                 "suse_score": suse_score_col,
                 "cna_score": cna_score_col,
-                "os": item.get("release", "ALL"),
+                "os": (lambda _r: (
+                    (lambda _m, _sp, _rx: (
+                        f"SL Micro {_m.replace('MICRO', '')}.{_sp}" if (_m.startswith("MICRO") and _sp)
+                        else (f"SLES 16.{_sp if _sp else '0'}" if _m == "16"
+                        else (f"SLES {_m} SP{_sp}" if (_m.isdigit() and _sp)
+                        else (f"SLES {_m}" if _m.isdigit() else _r)))
+                    ))(*build_platform_regex(_r))
+                ) if _r and _r.upper() != "ALL" and "," not in _r else (_r or "ALL"))(str(item.get("release") or "ALL").strip()),
                 "status": "NOT AFFECTED",
                 "patches": "—",
                 "pkgs": "0 / 0",
@@ -4540,11 +4547,11 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         print(f"\n  {CLR_BOLD}LINKS ({cve_id}):{CLR_RESET}")
         print(f"    SUSE CVE   : https://www.suse.com/security/cve/{cve_id}.html")
         print(f"    Red Hat CVE: https://access.redhat.com/security/cve/{cve_id}")
-        if rh_errata:
+        if rh_errata and cve_id in sll_cves_in_matrix:
             print(f"    RH Errata  : {_fmt_urls(rh_errata)}")
         if pure_bz:
             print(f"    Bugzilla   : {_fmt_urls(pure_bz)}")
-        if sll_mail:
+        if sll_mail and cve_id in sll_cves_in_matrix:
             print(f"    SLL Mailer : {_fmt_urls(sll_mail)}")
         if missing_rhsas and cve_id in sll_cves_in_matrix:
             by_v = entry.get("by_version") or {}
