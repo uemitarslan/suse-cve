@@ -11,7 +11,7 @@ def run_cli(*args):
     time.sleep(0.2)
     proc = subprocess.run(
         [sys.executable, BIN, *args],
-        stdin=subprocess.DEVNULL,
+        input="\n",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         universal_newlines=True,
         timeout=90,
