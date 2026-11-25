@@ -178,8 +178,8 @@ piddata = json.loads(out_pid)
 act_val = next((r["action"] for r in piddata.get("rows", []) if r.get("cve") == "CVE-2026-98432"), "")
 check("SUSE-SLE-" in act_val and "SUSE Linux Enterprise" not in act_val, "Batch action column renders clean SUSE-SLE-* patch IDs instead of product names")
 
-rc_t1, out_t1, _ = run_cli("15sp7", "CVE-2026-98432", "--table")
-check(rc_t1 == 0 and "[EXECUTIVE BATCH TRIAGE SUMMARY]" in out_t1 and "PATCHES / ACTION" in out_t1 and "[MITIGATION & MULTI-SOURCE" not in out_t1, "--table renders compact 1-row triage table for a single CVE")
+rc_t1, out_t1, _ = run_cli("15sp7", "CVE-2026-98432", "")
+check(rc_t1 == 0 and "[EXECUTIVE BATCH TRIAGE SUMMARY]" in out_t1 and "PATCHES / ACTION" in out_t1 and "[MITIGATION & MULTI-SOURCE" not in out_t1, " renders compact 1-row triage table for a single CVE")
 
 rc_s1, out_s1, _ = run_cli("15sp7", "CVE-2026-98432")
 check(rc_s1 == 0 and "PATCHES / ACTION" in out_s1 and "[EXECUTIVE TRIAGE SUMMARY]" in out_s1, "Default single-CVE output includes compact 1-row triage header table above details")
@@ -207,7 +207,7 @@ check("I've read https://" not in out_s156, "Filters out Bugzilla discussion cha
 rc_rem6, out_rem6, _ = run_cli("15sp6", "CVE-2026-98432", "--remediate")
 rem_line = next((ln for ln in out_rem6.splitlines() if "Explicit patch IDs:" in ln), "")
 check("SUSE-SLE-Product-SLES-15-SP6" in rem_line and rem_line.find("Product-SLES") < (rem_line.find("Live-Patching") if "Live-Patching" in rem_line else 9999), "Prioritizes standard SLES product patches before Live-Patching in --remediate")
-rc_res6, out_res6, _ = run_cli("15sp6", "CVE-2026-0438", "--table")
+rc_res6, out_res6, _ = run_cli("15sp6", "CVE-2026-0438", "")
 check("No Target RPM Yet | SUSE: Resolved Upstream" in out_res6, "Clarifies 'SUSE: Resolved Upstream' when target release RPM is not yet published")
 
 rc_brem, out_brem, _ = run_cli("12sp5", "CVE-2026-0394,CVE-2026-0438,CVE-2026-98432", "--remediate")
@@ -359,14 +359,14 @@ check(
     "--compact --include-eol restores End-of-Life rows for audit view"
 )
 
-rc_sll_csv, out_sll_csv, _ = run_cli("sll8,sll9,sll10", "CVE-2026-129289", "--compact", "--table")
+rc_sll_csv, out_sll_csv, _ = run_cli("sll8,sll9,sll10", "CVE-2026-129289", "--compact", "")
 check(
     rc_sll_csv == 0
     and "SLL 8" in out_sll_csv
     and "SLL 9" in out_sll_csv
     and "SLL 10" in out_sll_csv
     and out_sll_csv.count("LINKS (CVE-2026-129289):") == 1,
-    "Comma-separated SLL releases render per-release rows with deduplicated LINKS block in --compact --table"
+    "Comma-separated SLL releases render per-release rows with deduplicated LINKS block in --compact"
 )
 
 print("\nALL 14 TEST SUITES PASSED.")

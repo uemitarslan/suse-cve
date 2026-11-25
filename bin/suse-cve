@@ -4811,8 +4811,6 @@ if __name__ == "__main__":
     if only_kev:
         raw_args.remove("--only-kev")
 
-    as_table = any(a in ("--table", "-t") for a in raw_args)
-    raw_args = [a for a in raw_args if a not in ("--table", "-t")]
 
     as_compact = any(a in ("--compact", "-c") for a in raw_args)
     raw_args = [a for a in raw_args if a not in ("--compact", "-c")]
@@ -4878,8 +4876,8 @@ if __name__ == "__main__":
 
     want_help = any(a in ("-h", "--help") for a in sys.argv[1:])
     if want_help or (batch_file is None and len(raw_args) < 2) or (batch_file is not None and len(raw_args) < 1):
-        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
-        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("Usage   : suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
+        print("          suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]")
         print("Examples: suse-cve 15sp7 CVE-2026-98432")
         print("          suse-cve 15sp7 CVE-2026-97876,CVE-2026-98432")
         print("          suse-cve 15sp7 --file cves.txt --json                 (Batch triage from file with JSON)")
@@ -4931,7 +4929,7 @@ if __name__ == "__main__":
             if t.lower() in known_filters and filter_arg is None:
                 filter_arg = t
         try:
-            if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_table or as_compact or only_open or only_kev or as_csv or as_markdown:
+            if "," in first_cve_tok or ";" in first_cve_tok or extra_cves or as_compact or only_open or only_kev or as_csv or as_markdown:
                 batch_cves = extract_batch_cves([first_cve_tok] + extra_cves)
                 run_batch_query(raw_args[0], batch_cves, filter_arg, as_json=as_json, as_csv=as_csv, as_markdown=as_markdown, as_compact=as_compact, with_mitigation=with_mitigation, config_mode=config_mode, force_workaround=force_workaround, view_mode=view_mode, only_open=only_open, only_kev=only_kev, include_eol=include_eol, include_rhel_eus=include_rhel_eus)
             else:

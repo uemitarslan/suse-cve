@@ -49,8 +49,8 @@ sudo ./install.sh
 ## Usage
 
 ```bash
-suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
-suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--table] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] <cve[,cve2,...]> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
+suse-cve [<release>] --file <cve_list.txt | -> [status_filter] [--remediate | --mitigate] [--salt-config | --ansible-config] [--compact] [--include-eol] [--only-open] [--only-kev] [--json | --csv | --markdown]
 suse-cve --sync
 ```
 
@@ -66,7 +66,7 @@ suse-cve --sync
 | `--mitigate`, `-m` | No | Focus output or IaC generation strictly on compensating workarounds / hardening | `--mitigate` |
 | `--salt-config` | No | Output an idempotent SaltStack `.sls` state file | `--remediate --salt-config` |
 | `--ansible-config` | No | Output an idempotent Ansible YAML playbook | `--mitigate --ansible-config` |
-| `--table`, `-t` | No | Render compact executive triage table even for a single CVE | `--table` |
+| ``, `-t` | No | Render compact executive triage table even for a single CVE | `` |
 | `--compact`, `-c` | No | Render 1-line-per-OS-release matrix with SUSE/CNA/NVD scores, patch IDs, package counts & lifecycle | `--compact` |
 | `--include-eol`, `--eol` | No | Include End-of-Life (EOL) releases in `all` / `--compact` views (hidden by default) | `--compact --include-eol` |
 | `--only-open` | No | In batch mode, show only open/pending CVEs (exclude `PATCHED` & `NOT AFFECTED`) | `--only-open` |
