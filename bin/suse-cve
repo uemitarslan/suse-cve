@@ -3677,7 +3677,7 @@ def render_batch_csv_report(rel_arg: str, rows: list, filtered_results: list) ->
         w.writerow([cid, rel_arg, r["status"], r.get("status_detail", ""), r["severity"], meta["cvss"], meta["cisa_kev"], r["lifecycle"], r["action"], cmd, m_srcs, m_sums, m_urls, m_rbs])
     return buf.getvalue().rstrip("\n")
 
-def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filtered_results: list, errors: list, status_filter: str = None, only_open: bool = False, only_kev: bool = False) -> str:
+def render_batch_markdown_report(rel_arg: str, summary: dict, rows: list, filtered_results: list, errors: list, status_filter: str = None, only_open: bool = False, only_kev: bool = False, include_eol: bool = False) -> str:
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     flts = [status_filter or "ALL"] + (["--only-open"] if only_open else []) + (["--only-kev"] if only_kev else [])
