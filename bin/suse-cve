@@ -2101,6 +2101,57 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                     if mv in suse_rhsas_by_ver:
                         suse_rhsas_by_ver[mv].add(pid)
 
+        # Associate SUSE-recorded RHSA IDs with SLL major versions that have RELEASED entries,
+        # while keeping unaddressed RHEL streams/errata (e.g., SLL 9 php 8.2/8.4 vs. php 8.0) as gaps.
+        for _v in target_vers:
+            if suse_rhsas_by_ver.get(_v):
+                continue
+            _has_v_rel = any(
+                re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(_v) + r"\b", str(_k), re.IGNORECASE)
+                and bool(_pkgs)
+                for _m in (
+                    (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {},
+                    (raw_status_map.get("RELEASED") if isinstance(raw_status_map, dict) else None) or {},
+                )
+                if isinstance(_m, dict)
+                for _k, _pkgs in _m.items()
+            )
+            if not _has_v_rel:
+                continue
+            _v_pkgs = set()
+            for _m in (
+                (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {},
+                (raw_status_map.get("RELEASED") if isinstance(raw_status_map, dict) else None) or {},
+            ):
+                if isinstance(_m, dict):
+                    for _k, _pkgs in _m.items():
+                        if re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(_v) + r"\b", str(_k), re.IGNORECASE):
+                            _v_pkgs.update(str(_x).strip() for _x in (_pkgs or set()) if str(_x).strip())
+            _v_streams = {
+                _pk.split(":")[0].lower()
+                for _pk in _v_pkgs
+                if ":" in _pk
+            }
+            for _rh_id in suse_rhsas:
+                _rh_items = [
+                    _x for _x in rh_for_gap
+                    if (_x.get("advisory") or "").strip() == _rh_id
+                    and (_x.get("sll_ver") or "") == _v
+                ]
+                if not _rh_items:
+                    suse_rhsas_by_ver[_v].add(_rh_id)
+                    continue
+                _covered = True
+                for _it in _rh_items:
+                    _raw_p = (_it.get("package") or _it.get("pkg_norm") or "").strip().lower()
+                    _stream = _raw_p.split(":")[0] if ":" in _raw_p else ""
+                    if _v_streams and _stream:
+                        if _stream not in _v_streams:
+                            _covered = False
+                            break
+                if _covered:
+                    suse_rhsas_by_ver[_v].add(_rh_id)
+
         rhel_rhsas_by_ver = {v: [] for v in target_vers}
         for x in rh_for_gap:
             adv = (x.get("advisory") or "").strip()
@@ -2121,15 +2172,13 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             v_suse = sorted(suse_rhsas_by_ver.get(v) or set())
             v_rhel = list(rhel_rhsas_by_ver.get(v) or [])
             rel_map = (output_dict.get("RELEASED") if isinstance(output_dict, dict) else None) or {}
+            raw_rel_map = (raw_status_map.get("RELEASED") if isinstance(raw_status_map, dict) else None) or {}
             sll_rel_has_v = any(
                 re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(v) + r"\b", str(k), re.IGNORECASE)
                 and bool(pkgs)
-                for k, pkgs in rel_map.items()
+                for k, pkgs in (list(rel_map.items()) + list(raw_rel_map.items()))
             )
-            if sll_rel_has_v and not v_suse:
-                v_missing = []
-            else:
-                v_missing = [r for r in v_rhel if r not in set(v_suse)]
+            v_missing = [r for r in v_rhel if r not in set(v_suse)]
             v_gap_pkgs = {}
             for r_id in v_missing:
                 pkgs_for_r = sorted({
