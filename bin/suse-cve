@@ -4115,8 +4115,8 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 g_patches_col = ", ".join(m_rhsas) if len(m_rhsas) <= 3 else f"{m_rhsas[0]} (+{len(m_rhsas)-1})"
                 matrix_rows.append({
                     "cve": cve_id,
-                    "suse_score": "—",
-                    "cna_score": "—",
+                    "suse_score": suse_score_col,
+                    "cna_score": cna_score_col,
                     "os": f"{oname} (RHEL)",
                     "status": "RHEL GAP",
                     "patches": g_patches_col,
