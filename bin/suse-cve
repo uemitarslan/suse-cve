@@ -4311,6 +4311,10 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         print(f"  {r['cve']:<{w_cve}}  {r['suse_score']:<{w_ss}}  {r['cna_score']:<{w_cs}}  {CLR_BOLD}{r['os']:<{w_os}}{CLR_RESET}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['patches']:<{w_pa}}  {r['pkgs']:<{w_pk}}  {r['action']}")
 
     print("  " + "-" * (len(hdr) - 2))
+    sll_cves_in_matrix = {
+        r["cve"] for r in matrix_rows
+        if str(r.get("os") or "").startswith("SLL")
+    }
     merged_links = {}
     for cve_id, pure_bz, sll_mail, rh_errata, gap_info in link_blocks:
         if not cve_id:
@@ -4342,7 +4346,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             print(f"    Bugzilla   : {' | '.join(pure_bz)}")
         if sll_mail:
             print(f"    SLL Mailer : {' | '.join(sll_mail)}")
-        if missing_rhsas:
+        if missing_rhsas and cve_id in sll_cves_in_matrix:
             by_v = (mit.get("sll_gap") or {}).get("by_version") or {}
             active_vers = [vk for vk, vv in sorted(by_v.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999) if vv.get("missing_rhsas")]
             if len(active_vers) > 1:
