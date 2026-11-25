@@ -1419,7 +1419,22 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         sys.exit(1)
 
     major, sp, sp_regex = build_platform_regex(rel_arg)
-    oval_ts_str, oval_dt = get_oval_timestamp("15" if major == "ALL" else major)
+    if "," in str(rel_arg or ""):
+        _parts = [x.strip() for x in str(rel_arg).split(",") if x.strip()]
+        _majors = []
+        for _pt in _parts:
+            _pm, _, _ = build_platform_regex(_pt)
+            _om = "15" if _pm == "ALL" else _pm
+            if _om not in _majors:
+                _majors.append(_om)
+        _ts_pairs = [get_oval_timestamp(_om) for _om in _majors]
+        _valid_pairs = [(s_val, d_val) for s_val, d_val in _ts_pairs if d_val is not None]
+        if _valid_pairs:
+            oval_ts_str, oval_dt = min(_valid_pairs, key=lambda item: item[1])
+        else:
+            oval_ts_str, oval_dt = (_ts_pairs[0] if _ts_pairs else ("N/A", None))
+    else:
+        oval_ts_str, oval_dt = get_oval_timestamp("15" if major == "ALL" else major)
     web_map, patch_map, bugzilla_urls, web_ts_str, web_dt, web_all_prods, web_ok = fetch_web_data(cve, sp_regex)
 
     diff_hours = 0
