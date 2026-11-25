@@ -1418,7 +1418,21 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         if diff_hours > STALE_THRESHOLD_HOURS:
             is_stale = True
 
-    if is_stale and not as_json and allow_prompt and sys.stdin.isatty():
+    snooze_file = os.path.join(DATA_DIR if os.path.isdir(DATA_DIR) else "/tmp", ".oval_sync_snooze.json")
+    snooze_key = f"{oval_ts_str}|{web_ts_str}"
+    snoozed = False
+    snooze_data = {}
+    try:
+        if os.path.exists(snooze_file):
+            with open(snooze_file, encoding="utf-8") as sf:
+                snooze_data = json.load(sf) or {}
+            until_ts = float(snooze_data.get(snooze_key, 0) or 0)
+            if datetime.now(timezone.utc).timestamp() < until_ts:
+                snoozed = True
+    except Exception:
+        snooze_data = {}
+
+    if is_stale and not snoozed and not as_json and allow_prompt and sys.stdin.isatty():
         days = int(diff_hours // 24)
         rem_h = int(diff_hours % 24)
         age_str = f"{days}d {rem_h}h" if days > 0 else f"{rem_h}h"
@@ -1432,6 +1446,12 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         if ans in ("y", "yes"):
             sync_oval_files()
             return query(rel_arg, cve_arg, status_filter, as_json=as_json, with_mitigation=with_mitigation, allow_prompt=False, include_eol=include_eol)
+        try:
+            snooze_data[snooze_key] = datetime.now(timezone.utc).timestamp() + (12 * 3600)
+            with open(snooze_file, "w", encoding="utf-8") as sf:
+                json.dump(snooze_data, sf)
+        except Exception:
+            pass
         print()
 
     target_status = None
