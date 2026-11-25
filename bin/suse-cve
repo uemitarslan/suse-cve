@@ -118,6 +118,24 @@ def filter_packages_for_platform(platform: str, pkgs: set) -> set:
 
 
 def build_platform_regex(rel_arg: str):
+    if "," in rel_arg:
+        parts = [x.strip() for x in rel_arg.split(",") if x.strip()]
+        if len(parts) > 1:
+            sub_majors = []
+            sub_sps = []
+            sub_patterns = []
+            for part in parts:
+                m_part, sp_part, rx_part = build_platform_regex(part)
+                sub_majors.append(m_part)
+                sub_sps.append(sp_part)
+                sub_patterns.append(rx_part.pattern)
+            uniq_majors = list(dict.fromkeys(sub_majors))
+            merged_major = "ALL" if ("ALL" in uniq_majors or len(uniq_majors) > 1) else uniq_majors[0]
+            uniq_sps = list(dict.fromkeys(x for x in sub_sps if x))
+            merged_sp = uniq_sps[0] if len(uniq_sps) == 1 else ""
+            merged_rx = re.compile("|".join(f"(?:{pat})" for pat in sub_patterns), re.IGNORECASE)
+            return merged_major, merged_sp, merged_rx
+
     s = rel_arg.lower().replace("sles", "").replace("sle", "").strip("- _")
     if s in ("all", "*"):
         return "ALL", "", re.compile(r"(?:12|15|16|Liberty\s+Linux|RES(?:\s+AS)?|Micro(?:\s+Extras)?\s+[56]|SUSE\s+(?:Multi-Linux\s+)?Manager|Enterprise\s+Storage|CaaS\s+Platform|Rancher|Harvester|NeuVector|^(?:Container\s+)?bci/)", re.IGNORECASE)
@@ -1631,7 +1649,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             del raw_status_map["NOT AFFECTED"]
 
     rh_sll_upstream = []
-    sll_target_vers = [major[3:]] if major.startswith("SLL") else (["8", "9", "10"] if major == "ALL" else [])
+    is_unrestricted_all = (major == "ALL" and str(rel_arg or "").strip().lower() in ("all", "*"))
+    sll_target_vers = [major[3:]] if major.startswith("SLL") else (["8", "9", "10"] if is_unrestricted_all else [])
     for sll_ver in sll_target_vers:
             sll_prod_label = f"SUSE Liberty Linux {sll_ver}"
             rh_check = fetch_redhat_intel(cve)
@@ -2354,9 +2373,9 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 p_act = "None (Not Affected)"
                 p_col = PALETTE.get("RELEASED", {}).get("header", "")
             else:
-                p_st = r_single["status"]
-                p_act = r_single["action"]
-                p_col = st_color
+                p_st = "NOT AFFECTED / NO OPEN VULNERABILITY"
+                p_act = "No entry / patch for release"
+                p_col = PALETTE.get("RELEASED", {}).get("header", "")
 
             row_entries.append((
                 f"{cve} [{p_tag}]",
