@@ -2068,14 +2068,26 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             if str(x.get("advisory", "")).startswith("RHSA-")
         })
         missing_rhsas = [r for r in rhel_rhsas if r not in suse_rhsas]
+        gap_packages = {}
+        for r_id in missing_rhsas:
+            pkgs_for_r = sorted({
+                (x.get("package") or "").strip()
+                for x in rh_for_gap
+                if (x.get("advisory") or "").strip() == r_id and (x.get("package") or "").strip()
+            })
+            if pkgs_for_r:
+                gap_packages[r_id] = pkgs_for_r
         errata_urls = [f"https://access.redhat.com/errata/{r}" for r in rhel_rhsas]
+        gap_errata_urls = [f"https://access.redhat.com/errata/{r}" for r in missing_rhsas]
         sll_gap = {
             "target_versions": target_vers,
             "suse_rhsas": suse_rhsas,
             "rhel_rhsas": rhel_rhsas,
             "missing_rhsas": missing_rhsas,
+            "gap_packages": gap_packages,
             "has_gap": bool(missing_rhsas),
             "errata_urls": errata_urls,
+            "gap_errata_urls": gap_errata_urls,
         }
         if mitigation_data is not None:
             mitigation_data["sll_gap"] = sll_gap
@@ -4087,6 +4099,31 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 "action": act_col,
             })
 
+            gap_meta = mit.get("sll_gap") or item.get("sll_gap") or {}
+            m_rhsas = gap_meta.get("missing_rhsas") or []
+            if oname.startswith("SLL") and m_rhsas:
+                g_pkgs_map = gap_meta.get("gap_packages") or {}
+                g_pkg_items = []
+                for rid in m_rhsas:
+                    for pv in (g_pkgs_map.get(rid) or []):
+                        if pv not in g_pkg_items:
+                            g_pkg_items.append(pv)
+                if g_pkg_items:
+                    g_pkgs_col = ", ".join(g_pkg_items[:3]) + (f" (+{len(g_pkg_items)-3})" if len(g_pkg_items) > 3 else "")
+                else:
+                    g_pkgs_col = f"{len(m_rhsas)} RHSA(s) (see errata)"
+                g_patches_col = ", ".join(m_rhsas) if len(m_rhsas) <= 3 else f"{m_rhsas[0]} (+{len(m_rhsas)-1})"
+                matrix_rows.append({
+                    "cve": cve_id,
+                    "suse_score": "—",
+                    "cna_score": "—",
+                    "os": f"{oname} (RHEL)",
+                    "status": "RHEL GAP",
+                    "patches": g_patches_col,
+                    "pkgs": g_pkgs_col,
+                    "action": f"{lc} -> RH errata review",
+                })
+
         bz_list = mit.get("bugzilla") or []
         pure_bz = [u for u in bz_list if "bugzilla.suse.com" in u]
         sll_mail = [u for u in bz_list if "lists.suse.com" in u]
@@ -4157,6 +4194,8 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         if sll_mail:
             print(f"    SLL Mailer : {' | '.join(sll_mail)}")
         if missing_rhsas:
+            gap_urls = [f"https://access.redhat.com/errata/{r}" for r in missing_rhsas]
+            print(f"    {CLR_WARN}RH Gap Errata: {' | '.join(gap_urls)}{CLR_RESET}")
             print(f"    {CLR_WARN}RHEL-SUSE Gap: {', '.join(missing_rhsas)} (released at Red Hat, not listed in SLL patches){CLR_RESET}")
     if errors:
         print(f"\n  {CLR_WARN}Errors:{CLR_RESET} {', '.join(e['cve'] + ': ' + e['error'] for e in errors)}")
