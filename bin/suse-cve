@@ -2081,13 +2081,25 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     sorted_patches = {k: patch_map[k] for k in sorted(patch_map.keys())}
 
     sll_gap = None
-    if major.startswith("SLL") or any("Liberty Linux" in k for k in list(sorted_patches.keys()) + list(web_all_prods)):
-        target_vers = [major[3:]] if major.startswith("SLL") else sorted({
-            m.group(1)
-            for p in list(sorted_patches.keys()) + list(web_all_prods)
-            for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
-            if m
-        })
+    _rel_raw_l = str(rel_arg or "").strip().lower()
+    _explicit_sll_vers = []
+    if _rel_raw_l and _rel_raw_l not in ("all", "*"):
+        for _rp in [x.strip() for x in _rel_raw_l.split(",") if x.strip()]:
+            _ms = re.fullmatch(r"sll\s*([789]|10)", _rp, re.IGNORECASE)
+            if _ms and _ms.group(1) not in _explicit_sll_vers:
+                _explicit_sll_vers.append(_ms.group(1))
+    if major.startswith("SLL") or _explicit_sll_vers or (_rel_raw_l in ("all", "*") and any("Liberty Linux" in k for k in list(sorted_patches.keys()) + list(web_all_prods))):
+        if major.startswith("SLL"):
+            target_vers = [major[3:]]
+        elif _explicit_sll_vers:
+            target_vers = sorted(_explicit_sll_vers, key=lambda s: int(s))
+        else:
+            target_vers = sorted({
+                m.group(1)
+                for p in list(sorted_patches.keys()) + list(web_all_prods)
+                for m in [re.search(r"SUSE\s+Liberty\s+Linux\s+([789]|10)\b", p, re.IGNORECASE)]
+                if m
+            })
         def _match_rhel_ver(prod_name: str, v_str: str) -> bool:
             p_clean = (prod_name or "").strip()
             if include_rhel_eus:
@@ -2195,8 +2207,13 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 if not has_v_rel:
                     continue
                 rel_streams = {_extract_stream_name(pk) for pk in v_pkgs if _extract_stream_name(pk)}
-                streams_by_rhsa = (rhel_ref.get(v) or {}).get("streams_by_rhsa") or {}
-                for rh_id in suse_all_rhsas:
+                v_ref = rhel_ref.get(v) or {}
+                streams_by_rhsa = v_ref.get("streams_by_rhsa") or {}
+                cand_rhsas = list(suse_all_rhsas or [])
+                for _r_id in (v_ref.get("rhsas") or []):
+                    if _r_id not in cand_rhsas:
+                        cand_rhsas.append(_r_id)
+                for rh_id in cand_rhsas:
                     rh_streams = streams_by_rhsa.get(rh_id) or set()
                     if not rh_streams or not rel_streams or rh_streams.issubset(rel_streams):
                         cov[v].add(rh_id)
