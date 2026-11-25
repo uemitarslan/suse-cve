@@ -2307,7 +2307,36 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     if not_affected_releases_list:
         print(f"  {CLR_BOLD}Not Affected Releases      :{CLR_RESET} {c_na}{', '.join(not_affected_releases_list)}{CLR_RESET}")
 
-    if target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
+    multi_target_lcs = []
+    if "," in str(rel_arg or ""):
+        for part in [x.strip() for x in str(rel_arg).split(",") if x.strip()]:
+            p_maj, p_sp, _ = build_platform_regex(part)
+            p_tag = None
+            if p_maj.startswith("MICRO") and p_sp:
+                p_tag = f"SL Micro {p_maj.replace('MICRO', '')}.{p_sp}"
+            elif p_maj == "16":
+                p_tag = f"SLES 16.{p_sp if p_sp else '0'}"
+            elif p_sp:
+                p_tag = f"SLES {p_maj} SP{p_sp}"
+            if p_tag:
+                p_lc = evaluate_release_lifecycle(p_tag, lifecycle_map)
+                if p_lc and p_lc.get("state") != "UNKNOWN":
+                    multi_target_lcs.append((p_tag, p_lc))
+
+    if len(multi_target_lcs) > 1:
+        parts_txt = []
+        worst_state = "GENERAL_SUPPORT"
+        for p_tag, p_lc in multi_target_lcs:
+            st = p_lc.get("state")
+            if st == "EOL":
+                worst_state = "EOL"
+            elif st == "LTSS_ONLY" and worst_state != "EOL":
+                worst_state = "LTSS_ONLY"
+            parts_txt.append(f"{p_tag}: {p_lc['label']}")
+        lc_color = c_aff_b if worst_state == "EOL" else (CLR_WARN if worst_state == "LTSS_ONLY" else c_rel)
+        joined_lcs = " | ".join(parts_txt)
+        print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{joined_lcs}{CLR_RESET}")
+    elif target_lifecycle and target_lifecycle["state"] != "UNKNOWN":
         lc_color = c_aff_b if target_lifecycle["state"] == "EOL" else (CLR_WARN if target_lifecycle["state"] == "LTSS_ONLY" else c_rel)
         print(f"  {CLR_BOLD}Target Lifecycle ({rel_arg})   :{CLR_RESET} {lc_color}{target_lifecycle['label']}{CLR_RESET}")
 
