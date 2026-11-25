@@ -2332,9 +2332,23 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 p_act = "Check affected packages"
                 p_col = PALETTE.get("IN QA", {}).get("header", "")
             elif tag_l in open_set or tag_l in aff_set:
-                p_st = "AFFECTED / UNPATCHED"
-                p_act = "Patch / Mitigate (see advisory)"
-                p_col = c_aff_b
+                has_qa_for_rel = any(
+                    str(k).strip().lower().startswith(tag_l)
+                    for k, v in (prod_status_map.get("IN QA", {}) or {}).items()
+                    if v
+                ) and not any(
+                    str(k).strip().lower().startswith(tag_l)
+                    for k, v in (patch_map or {}).items()
+                    if v
+                )
+                if has_qa_for_rel:
+                    p_st = "IN QA"
+                    p_act = "Wait for QA patch or --mitigate"
+                    p_col = PALETTE.get("IN QA", {}).get("header", "")
+                else:
+                    p_st = "AFFECTED / UNPATCHED"
+                    p_act = "Patch / Mitigate (see advisory)"
+                    p_col = c_aff_b
             elif tag_l in na_set:
                 p_st = "NOT AFFECTED / NO OPEN VULNERABILITY"
                 p_act = "None (Not Affected)"
@@ -2429,10 +2443,18 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
     status_scope = target_sles_tag if ("," in str(rel_arg or "") and target_sles_tag) else rel_arg
     print(f"  {CLR_BOLD}Release Status ({status_scope}) :{CLR_RESET} {st_color}{triage_status}{CLR_RESET}")
     if "," in str(rel_arg or "") and target_sles_tag:
+        aff_lower = {str(x).strip().lower() for x in (affected_releases or [])}
+        queried_aff = []
+        for part in [x.strip() for x in str(rel_arg).split(",") if x.strip()]:
+            pm, psp, _ = build_platform_regex(part)
+            ptag = f"SLES 16.{psp if psp else '0'}" if pm == "16" else (f"SL Micro {pm.replace('MICRO', '')}.{psp}" if pm.startswith("MICRO") and psp else (f"SLES {pm} SP{psp}" if psp else part))
+            if ptag.lower() in aff_lower and ptag not in queried_aff:
+                queried_aff.append(ptag)
+        aff_hint = f"e.g. {', '.join(queried_aff)} are affected while {target_sles_tag} is not" if queried_aff else f"some releases may be affected while {target_sles_tag} is not"
         print(
-            f"  {CLR_DIM}Scope: Top status, packages, and workarounds cover primary target {target_sles_tag} only "
-            f"(not affected here). 'CVE-Wide Affected/Not Affected' lists all SLES/Micro releases for the CVE "
-            f"(e.g. SLES 15 SP7 may be affected while {target_sles_tag} is not). Use --compact for per-target triage.{CLR_RESET}"
+            f"  {CLR_DIM}Scope: Full details/workarounds below cover primary target {target_sles_tag} only; "
+            f"top table shows each queried target. 'CVE-Wide Affected/Not Affected' lists all SLES/Micro releases "
+            f"for the CVE ({aff_hint}). Use --compact for full per-target triage.{CLR_RESET}"
         )
 
     if target_lifecycle and target_lifecycle["state"] == "EOL":
@@ -4284,8 +4306,23 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 "action": "No action required",
             })
 
+        req_rel_raw = str(item.get("release") or "").strip()
+        allowed_tags = set()
+        if req_rel_raw and req_rel_raw.upper() != "ALL":
+            for r_part in [x.strip() for x in req_rel_raw.split(",") if x.strip()]:
+                rm, rsp, _ = build_platform_regex(r_part)
+                if rm.startswith("MICRO") and rsp:
+                    allowed_tags.add(f"micro {rm.replace('MICRO', '')}.{rsp}")
+                elif rm == "16":
+                    allowed_tags.add(f" 16.{rsp if rsp else '0'}")
+                elif rsp:
+                    allowed_tags.add(f" {rm} sp{rsp}")
+
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
-            if oname.lower().startswith("opensuse"):
+            oname_l = oname.lower()
+            if oname_l.startswith("opensuse"):
+                continue
+            if allowed_tags and not any(tok in oname_l for tok in allowed_tags):
                 continue
             if not include_eol and _os_lifecycle(oname) == "EOL":
                 continue
@@ -4338,7 +4375,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             else:
                 pkgs_col = f"{rel_n} / {open_n}"
 
-            lc = _os_lifecycle(oname)
+            lc = "LTSS Extended Security" if "ltss extended security" in oname.lower() else _os_lifecycle(oname)
             if st_label in ("RELEASED", "PARTIAL"):
                 if oname.startswith("BCI "):
                     pkg_mgr = "pull updated image"
