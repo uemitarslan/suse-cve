@@ -3721,13 +3721,22 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         m_caas = re.search(r"SUSE\s+CaaS\s+Platform\s+(\d+(?:\.\d+)?)", p_clean, re.IGNORECASE)
         if m_caas:
             return f"CaaSP {m_caas.group(1)}"
-        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro(?:\s+Extras)?\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
+        m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro(?:\s+(?:Extras|for\s+Rancher))?\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
         m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", p_clean, re.IGNORECASE)
         if m_sll:
             return f"SLL {m_sll.group(1)}"
-        m_sle = re.search(r"(?:Enterprise\s+(?:Server|Desktop|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES_SAP|SLES|SLED)(?:\s+for\s+[^0-9]+)?\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", p_clean, re.IGNORECASE)
+        m_sap = re.search(r"(?:Server\s+for\s+SAP\s+Applications|SLES_SAP|SLES\s+for\s+SAP)\s*(1[256])(?:(?:-SAP)?(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", p_clean, re.IGNORECASE)
+        if m_sap:
+            maj, sp = m_sap.group(1), m_sap.group(2)
+            if maj == "16":
+                return f"SLES for SAP 16.{sp if sp else '0'}"
+            return f"SLES for SAP {maj} SP{sp}" if sp else f"SLES for SAP {maj}"
+        m_sled = re.search(r"(?:Enterprise\s+Desktop|SLED)\s*(1[256])(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+)", p_clean, re.IGNORECASE)
+        if m_sled:
+            return f"SLED {m_sled.group(1)} SP{m_sled.group(2)}"
+        m_sle = re.search(r"(?:Enterprise\s+(?:Server|High\s+Performance\s+Computing|Module\s+for\s+[^0-9]+)|SLES)(?:\s+for\s+[^0-9]+)?\s*(1[256])(?:(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", p_clean, re.IGNORECASE)
         if m_sle:
             maj, sp = m_sle.group(1), m_sle.group(2)
             if maj == "16":
@@ -3746,6 +3755,13 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         if os_name.startswith("SLES 16"):
             m = re.search(r"16\.(\d+)", os_name)
             return (eol_rank, 2, int(m.group(1)) if m else 0, os_name)
+        if os_name.startswith("SLES for SAP"):
+            m = re.search(r"(1[256])(?:\s+SP(\d+)|\.(\d+))?", os_name)
+            maj_n = int(m.group(1)) if m else 0
+            min_n = int(m.group(2) or m.group(3) or 0) if m else 0
+            return (eol_rank, 3, maj_n * 10 + min_n, os_name)
+        if os_name.startswith("SLED "):
+            return (eol_rank, 4, 0, os_name)
         if os_name.startswith("SL Micro"):
             return (eol_rank, 3, 0, os_name)
         if os_name.startswith("SLL "):
@@ -3760,6 +3776,14 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         return (eol_rank, 8, 0, os_name)
 
     def _os_lifecycle(os_name: str) -> str:
+        if os_name.startswith("SLES for SAP"):
+            if "12 SP5" in os_name:
+                return "LTSS"
+            if any(x in os_name for x in ("15 SP1", "15 SP2", "15 SP3")) or os_name == "SLES for SAP 15":
+                return "EOL"
+            if any(x in os_name for x in ("15 SP4", "15 SP5", "15 SP6")):
+                return "SAP ESOS / LTSS"
+            return "General Support"
         if os_name.startswith("SLES 12"):
             return "LTSS" if "SP5" in os_name else "EOL"
         if os_name == "SLES 15" or any(os_name == f"SLES 15 SP{x}" for x in (1, 2, 3)):
