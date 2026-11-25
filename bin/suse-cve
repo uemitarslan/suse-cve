@@ -2298,14 +2298,80 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
         "patches": sorted_patches,
         "mitigation": mitigation_data or {},
     }, rel_arg=rel_arg)
-    w_cve = max(len("CVE"), len(r_single["cve"]))
-    w_st = max(len("STATUS"), len(r_single["status"]))
-    w_sev = max(len("SEVERITY"), len(r_single["severity"]))
-    w_lc = max(len("LIFECYCLE"), len(r_single["lifecycle"]))
+
+    target_parts = [x.strip() for x in str(rel_arg or "").split(",") if x.strip()]
+    row_entries = []
+    if len(target_parts) > 1:
+        aff_set = {str(x).strip().lower() for x in (affected_releases or [])}
+        na_set = {str(x).strip().lower() for x in (not_affected_releases_list or [])}
+        pat_set = {str(x).strip().lower() for x in (patched_releases_list or [])}
+        part_pat_set = {str(x).strip().lower() for x in (partially_patched_releases_list or [])}
+        open_set = {str(x).strip().lower() for x in (open_releases_list or [])}
+
+        for part in target_parts:
+            p_maj, p_sp, _ = build_platform_regex(part)
+            if p_maj.startswith("MICRO") and p_sp:
+                p_tag = f"SL Micro {p_maj.replace('MICRO', '')}.{p_sp}"
+            elif p_maj == "16":
+                p_tag = f"SLES 16.{p_sp if p_sp else '0'}"
+            elif p_sp:
+                p_tag = f"SLES {p_maj} SP{p_sp}"
+            else:
+                p_tag = part
+
+            p_lc_obj = evaluate_release_lifecycle(p_tag, lifecycle_map) if p_tag else None
+            p_lc_str = (p_lc_obj.get("state") if isinstance(p_lc_obj, dict) else None) or r_single["lifecycle"]
+
+            tag_l = p_tag.lower()
+            if tag_l in pat_set:
+                p_st = "PATCHED"
+                p_act = "Patched (see advisory)"
+                p_col = PALETTE.get("RELEASED", {}).get("header", "")
+            elif tag_l in part_pat_set:
+                p_st = "PARTIALLY PATCHED"
+                p_act = "Check affected packages"
+                p_col = PALETTE.get("IN QA", {}).get("header", "")
+            elif tag_l in open_set or tag_l in aff_set:
+                p_st = "AFFECTED / UNPATCHED"
+                p_act = "Patch / Mitigate (see advisory)"
+                p_col = c_aff_b
+            elif tag_l in na_set:
+                p_st = "NOT AFFECTED / NO OPEN VULNERABILITY"
+                p_act = "None (Not Affected)"
+                p_col = PALETTE.get("RELEASED", {}).get("header", "")
+            else:
+                p_st = r_single["status"]
+                p_act = r_single["action"]
+                p_col = st_color
+
+            row_entries.append((
+                f"{cve} [{p_tag}]",
+                p_st,
+                r_single["severity"],
+                p_lc_str,
+                p_act,
+                p_col,
+            ))
+    else:
+        row_entries.append((
+            r_single["cve"],
+            r_single["status"],
+            r_single["severity"],
+            r_single["lifecycle"],
+            r_single["action"],
+            st_color,
+        ))
+
+    w_cve = max([len("CVE")] + [len(str(x[0])) for x in row_entries])
+    w_st = max([len("STATUS")] + [len(str(x[1])) for x in row_entries])
+    w_sev = max([len("SEVERITY")] + [len(str(x[2])) for x in row_entries])
+    w_lc = max([len("LIFECYCLE")] + [len(str(x[3])) for x in row_entries])
     tbl_hdr = f"  {'CVE':<{w_cve}}  {'STATUS':<{w_st}}  {'SEVERITY':<{w_sev}}  {'LIFECYCLE':<{w_lc}}  PATCHES / ACTION"
     print(f"{CLR_BOLD}{tbl_hdr}{CLR_RESET}")
     print("  " + "-" * (len(tbl_hdr) - 2))
-    print(f"  {r_single['cve']:<{w_cve}}  {st_color}{r_single['status']:<{w_st}}{CLR_RESET}  {r_single['severity']:<{w_sev}}  {r_single['lifecycle']:<{w_lc}}  {r_single['action']}\n")
+    for r_cve, r_st, r_sev, r_lc, r_act, r_col in row_entries:
+        print(f"  {r_cve:<{w_cve}}  {r_col}{r_st:<{w_st}}{CLR_RESET}  {r_sev:<{w_sev}}  {r_lc:<{w_lc}}  {r_act}")
+    print()
     print(f"{CLR_MAG}[EXECUTIVE TRIAGE SUMMARY]{CLR_RESET}")
     if affected_releases:
         if active_supported_releases:
