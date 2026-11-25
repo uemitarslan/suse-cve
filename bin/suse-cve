@@ -4318,6 +4318,18 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 elif rsp:
                     allowed_tags.add(f" {rm} sp{rsp}")
 
+        req_rel_raw = str(item.get("release") or "").strip()
+        allowed_tags = set()
+        if req_rel_raw and req_rel_raw.upper() != "ALL":
+            for r_part in [x.strip() for x in req_rel_raw.split(",") if x.strip()]:
+                rm, rsp, _ = build_platform_regex(r_part)
+                if rm.startswith("MICRO") and rsp:
+                    allowed_tags.add(f"micro {rm.replace('MICRO', '')}.{rsp}")
+                elif rm == "16":
+                    allowed_tags.add(f" 16.{rsp if rsp else '0'}")
+                elif rsp:
+                    allowed_tags.add(f" {rm} sp{rsp}")
+
         for oname in sorted(os_buckets.keys(), key=_os_sort_key):
             oname_l = oname.lower()
             if oname_l.startswith("opensuse"):
@@ -4385,7 +4397,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                     pkg_mgr = "zypper patch"
                 act_col = f"{lc} -> {pkg_mgr}"
             elif st_label == "NOT AFFECTED":
-                act_col = f"{lc} (Not Affected)"
+                act_col = f"{'LTSS Extended Security' if 'ltss extended security' in oname.lower() else lc} (Not Affected)"
             else:
                 act_col = f"{lc} -> --mitigate"
 
