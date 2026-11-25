@@ -1165,6 +1165,7 @@ SLES_LIFECYCLE_FALLBACK = {
     "SLES 12 SP3": {"general_eol": "2019-06-30", "ltss_eol": "2022-06-30"},
     "SLES 12 SP4": {"general_eol": "2020-06-30", "ltss_eol": "2023-06-30"},
     "SLES 12 SP5": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31"},
+    "SLES 15":     {"general_eol": "2019-12-31", "ltss_eol": "2022-12-31"},
     "SLES 15 SP1": {"general_eol": "2021-01-31", "ltss_eol": "2024-01-31"},
     "SLES 15 SP2": {"general_eol": "2021-12-31", "ltss_eol": "2024-12-31"},
     "SLES 15 SP3": {"general_eol": "2022-12-31", "ltss_eol": "2025-12-31"},
@@ -1174,11 +1175,56 @@ SLES_LIFECYCLE_FALLBACK = {
     "SLES 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2031-07-31"},
     "SLES 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2033-10-31"},
     "SLES 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2034-10-31"},
+    "SLES for SAP 12 SP5": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 15":     {"general_eol": "2022-12-31", "ltss_eol": None},
+    "SLES for SAP 15 SP1": {"general_eol": "2024-01-31", "ltss_eol": None},
+    "SLES for SAP 15 SP2": {"general_eol": "2024-12-31", "ltss_eol": None},
+    "SLES for SAP 15 SP3": {"general_eol": "2025-12-31", "ltss_eol": None},
+    "SLES for SAP 15 SP4": {"general_eol": "2023-12-31", "ltss_eol": "2026-12-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 15 SP5": {"general_eol": "2024-12-31", "ltss_eol": "2027-07-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 15 SP6": {"general_eol": "2025-12-31", "ltss_eol": "2028-07-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": "2032-07-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 16.0":   {"general_eol": "2030-10-31", "ltss_eol": "2034-10-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLES for SAP 16.1":   {"general_eol": "2031-10-31", "ltss_eol": "2035-10-31", "ltss_label": "SAP ESOS / LTSS"},
+    "SLED 15 SP4": {"general_eol": "2023-12-31", "ltss_eol": None},
+    "SLED 15 SP5": {"general_eol": "2024-12-31", "ltss_eol": None},
+    "SLED 15 SP6": {"general_eol": "2025-12-31", "ltss_eol": None},
+    "SLED 15 SP7": {"general_eol": "2028-07-31", "ltss_eol": None},
+    "SL Micro 5.0": {"general_eol": "2022-05-31", "ltss_eol": None},
+    "SL Micro 5.1": {"general_eol": "2022-10-31", "ltss_eol": None},
+    "SL Micro 5.2": {"general_eol": "2023-10-31", "ltss_eol": None},
+    "SL Micro 5.3": {"general_eol": "2024-04-30", "ltss_eol": None},
     "SL Micro 5.4": {"general_eol": "2024-11-30", "ltss_eol": None},
     "SL Micro 5.5": {"general_eol": "2026-04-30", "ltss_eol": None},
     "SL Micro 6.0": {"general_eol": "2026-10-31", "ltss_eol": None},
     "SL Micro 6.1": {"general_eol": "2028-04-30", "ltss_eol": None},
     "SL Micro 6.2": {"general_eol": "2029-10-31", "ltss_eol": None},
+    "SLL 7":  {"general_eol": "2020-06-30", "ltss_eol": "2024-06-30"},
+    "SLL 8":  {"general_eol": "2029-05-31", "ltss_eol": None},
+    "SLL 9":  {"general_eol": "2032-05-31", "ltss_eol": None},
+    "SLL 10": {"general_eol": "2035-05-31", "ltss_eol": None},
+    "SUSE Manager Server 4.0": {"general_eol": "2021-10-31", "ltss_eol": None},
+    "SUSE Manager Server 4.1": {"general_eol": "2022-10-31", "ltss_eol": None},
+    "SUSE Manager Server 4.2": {"general_eol": "2023-10-31", "ltss_eol": None},
+    "SUSE Manager Server 4.3": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31", "ltss_label": "LTSS Core"},
+    "SUSE Manager Server 5.0": {"general_eol": "2026-04-30", "ltss_eol": None},
+    "SUSE Manager Server 5.1": {"general_eol": "2028-04-30", "ltss_eol": None},
+    "SUSE Manager Proxy 4.0":  {"general_eol": "2021-10-31", "ltss_eol": None},
+    "SUSE Manager Proxy 4.1":  {"general_eol": "2022-10-31", "ltss_eol": None},
+    "SUSE Manager Proxy 4.2":  {"general_eol": "2023-10-31", "ltss_eol": None},
+    "SUSE Manager Proxy 4.3":  {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31", "ltss_label": "LTSS Core"},
+    "SUSE Manager Proxy 5.0":  {"general_eol": "2026-04-30", "ltss_eol": None},
+    "SUSE Manager Proxy 5.1":  {"general_eol": "2028-04-30", "ltss_eol": None},
+    "SUSE Manager Retail 4.0": {"general_eol": "2021-10-31", "ltss_eol": None},
+    "SUSE Manager Retail 4.1": {"general_eol": "2022-10-31", "ltss_eol": None},
+    "SUSE Manager Retail 4.2": {"general_eol": "2023-10-31", "ltss_eol": None},
+    "SUSE Manager Retail 4.3": {"general_eol": "2024-10-31", "ltss_eol": "2027-10-31", "ltss_label": "LTSS Core"},
+    "SUSE Manager Retail 5.0": {"general_eol": "2026-04-30", "ltss_eol": None},
+    "SUSE Manager Retail 5.1": {"general_eol": "2028-04-30", "ltss_eol": None},
+    "SES 6":   {"general_eol": "2022-06-30", "ltss_eol": None},
+    "SES 7":   {"general_eol": "2023-10-31", "ltss_eol": None},
+    "SES 7.1": {"general_eol": "2024-10-31", "ltss_eol": None},
+    "CaaSP 4.0": {"general_eol": "2021-12-31", "ltss_eol": None},
 }
 
 
@@ -1225,6 +1271,15 @@ def load_sles_lifecycle() -> dict:
                         entry["general_eol"] = eol[:10]
                     if isinstance(ext, str) and len(ext) >= 10:
                         entry["ltss_eol"] = ext[:10]
+                    sap_key = key.replace("SLES ", "SLES for SAP ", 1)
+                    if sap_key in lifecycle:
+                        if isinstance(eol, str) and len(eol) >= 10:
+                            lifecycle[sap_key]["general_eol"] = eol[:10]
+                        if isinstance(ext, str) and len(ext) >= 10:
+                            lifecycle[sap_key]["ltss_eol"] = ext[:10]
+                    sled_key = key.replace("SLES ", "SLED ", 1)
+                    if sled_key in lifecycle and isinstance(eol, str) and len(eol) >= 10:
+                        lifecycle[sled_key]["general_eol"] = eol[:10]
     except Exception:
         pass
 
@@ -3775,33 +3830,20 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             return (eol_rank, 7, 0, os_name)
         return (eol_rank, 8, 0, os_name)
 
+    _dyn_lifecycle_map = load_sles_lifecycle()
+
     def _os_lifecycle(os_name: str) -> str:
-        if os_name.startswith("SLES for SAP"):
-            if "12 SP5" in os_name:
-                return "LTSS"
-            if any(x in os_name for x in ("15 SP1", "15 SP2", "15 SP3")) or os_name == "SLES for SAP 15":
-                return "EOL"
-            if any(x in os_name for x in ("15 SP4", "15 SP5", "15 SP6")):
-                return "SAP ESOS / LTSS"
-            return "General Support"
-        if os_name.startswith("SLES 12"):
-            return "LTSS" if "SP5" in os_name else "EOL"
-        if os_name == "SLES 15" or any(os_name == f"SLES 15 SP{x}" for x in (1, 2, 3)):
-            return "EOL"
-        if any(os_name == f"SLES 15 SP{x}" for x in (4, 5, 6)):
-            return "LTSS Required"
-        if os_name == "SLL 7":
-            return "EOL"
-        if os_name.startswith("SL Micro 5.") and any(os_name.endswith(f".{x}") for x in (0, 1, 2, 3, 4)):
-            return "EOL"
-        if os_name.startswith(("SES ", "CaaSP ")):
-            return "EOL"
-        if os_name.startswith("SUSE Manager") and any(v in os_name for v in ("4.0", "4.1", "4.2", "5.0")):
-            return "EOL"
-        if os_name.startswith("SUSE Manager") and "4.3" in os_name:
-            return "LTSS Core"
         if os_name.startswith("BCI "):
             return "Container Image"
+        ev = evaluate_release_lifecycle(os_name, _dyn_lifecycle_map)
+        st = ev.get("state", "UNKNOWN")
+        if st == "EOL":
+            return "EOL"
+        if st == "LTSS_ONLY":
+            info = _dyn_lifecycle_map.get(os_name) or {}
+            if info.get("ltss_label"):
+                return info["ltss_label"]
+            return "LTSS" if os_name.startswith("SLES 12") else "LTSS Required"
         return "General Support"
 
     matrix_rows = []

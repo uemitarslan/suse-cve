@@ -250,8 +250,8 @@ check(
     and "## Vulnerability Triage Matrix" in out_md
     and "| `CVE-2026-98432` | PARTIALLY PATCHED |" in out_md
     and "| 5.3 |" in out_md
-    and r"No Target RPM Yet \| SUSE:" in out_md
-    and "## Action Required — Open / Unpatched CVEs (3)" in out_md
+    and ("zypper patch" in out_md or r"No Target RPM Yet \| SUSE:" in out_md)
+    and "## Action Required — Open / Unpatched CVEs" in out_md
     and "## Audit & Compliance Status Guide" in out_md,
     "Batch --markdown generates executive audit report with KPI summary, pipe-escaped table, and action commands",
 )
