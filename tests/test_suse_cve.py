@@ -359,4 +359,14 @@ check(
     "--compact --include-eol restores End-of-Life rows for audit view"
 )
 
+rc_sll_csv, out_sll_csv, _ = run_cli("sll8,sll9,sll10", "CVE-2026-129289", "--compact", "--table")
+check(
+    rc_sll_csv == 0
+    and "SLL 8" in out_sll_csv
+    and "SLL 9" in out_sll_csv
+    and "SLL 10" in out_sll_csv
+    and out_sll_csv.count("LINKS (CVE-2026-129289):") == 1,
+    "Comma-separated SLL releases render per-release rows with deduplicated LINKS block in --compact --table"
+)
+
 print("\nALL 14 TEST SUITES PASSED.")
