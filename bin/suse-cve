@@ -2207,13 +2207,8 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 if not has_v_rel:
                     continue
                 rel_streams = {_extract_stream_name(pk) for pk in v_pkgs if _extract_stream_name(pk)}
-                v_ref = rhel_ref.get(v) or {}
-                streams_by_rhsa = v_ref.get("streams_by_rhsa") or {}
-                cand_rhsas = list(suse_all_rhsas or [])
-                for _r_id in (v_ref.get("rhsas") or []):
-                    if _r_id not in cand_rhsas:
-                        cand_rhsas.append(_r_id)
-                for rh_id in cand_rhsas:
+                streams_by_rhsa = (rhel_ref.get(v) or {}).get("streams_by_rhsa") or {}
+                for rh_id in suse_all_rhsas:
                     rh_streams = streams_by_rhsa.get(rh_id) or set()
                     if not rh_streams or not rel_streams or rh_streams.issubset(rel_streams):
                         cov[v].add(rh_id)
