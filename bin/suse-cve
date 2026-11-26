@@ -4491,9 +4491,14 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
         m_mic = re.search(r"(?:Enterprise|Linux)\s+Micro(?:\s+(?:Extras|for\s+Rancher))?\s+([56])\.(\d+)\b", p_clean, re.IGNORECASE)
         if m_mic:
             return f"SL Micro {m_mic.group(1)}.{m_mic.group(2)}"
-        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)\b", p_clean, re.IGNORECASE)
+        m_sll = re.search(r"(?:SUSE\s+Liberty\s+Linux|RES(?:\s+AS)?)\s+([789]|10)(?:\.(\d+))?\b(.*)$", p_clean, re.IGNORECASE)
         if m_sll:
-            return f"SLL {m_sll.group(1)}"
+            sll_maj = m_sll.group(1)
+            sll_min = m_sll.group(2)
+            sll_tail = (m_sll.group(3) or "").strip()
+            if re.search(r"\bEMS\b", sll_tail, re.IGNORECASE):
+                return f"SLL {sll_maj}.{sll_min} EMS" if sll_min else f"SLL {sll_maj} EMS"
+            return f"SLL {sll_maj}"
         m_sap = re.search(r"(?:Server\s+for\s+SAP\s+Applications|SLES_SAP|SLES\s+for\s+SAP)\s*(1[256])(?:(?:-SAP)?(?:[-\s]+(?:SP|Service\s+Pack)\s*|\.)(\d+))?", p_clean, re.IGNORECASE)
         if m_sap:
             maj, sp = m_sap.group(1), m_sap.group(2)
@@ -4635,6 +4640,8 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
 
         for prod, plist in patch_map.items():
             oname = _norm_os(prod)
+            if oname not in os_buckets:
+                continue
             b = _ensure_os(oname)
             for p_obj in plist:
                 pid = p_obj.get("patch", "")
@@ -4714,14 +4721,28 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
 
             pids = sorted(b["patches"], key=lambda x: (0 if ("Product-SLES-" in x or "Module-Web-Scripting" in x or x.startswith("RHSA-")) else 1, x))
             if st_label == "UPSTREAM ONLY" and pids:
-                patch_col = f"Upstream: {pids[0]}" + (f" (+{len(pids)-1})" if len(pids) > 1 else "")
-            elif pids:
-                if len(pids) <= 4 and sum(len(x) for x in pids) <= 72:
-                    patch_col = ", ".join(pids)
+                if len(pids) <= 2:
+                    patch_col = "Upstream: " + ", ".join(pids)
+                    patch_lines = [patch_col]
                 else:
-                    patch_col = f"{pids[0]} (+{len(pids)-1})"
+                    mid = (len(pids) + 1) // 2
+                    line1 = "Upstream: " + ", ".join(pids[:mid])
+                    line2 = ", ".join(pids[mid:])
+                    patch_col = max(line1, line2, key=len)
+                    patch_lines = [line1, line2]
+            elif pids:
+                if len(pids) <= 2 and sum(len(x) for x in pids) <= 72:
+                    patch_col = ", ".join(pids)
+                    patch_lines = [patch_col]
+                else:
+                    mid = (len(pids) + 1) // 2
+                    line1 = ", ".join(pids[:mid])
+                    line2 = ", ".join(pids[mid:])
+                    patch_col = max(line1, line2, key=len)
+                    patch_lines = [line1, line2]
             else:
                 patch_col = "—"
+                patch_lines = ["—"]
 
             if st_label == "UPSTREAM ONLY":
                 pkgs_col = f"0 / {up_n} streams"
@@ -4751,6 +4772,7 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
                 "os": oname,
                 "status": st_label,
                 "patches": patch_col,
+                "patch_lines": patch_lines,
                 "pkgs": pkgs_col,
                 "action": act_col,
             })
@@ -4822,7 +4844,10 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             st_col = CLR_MAG
         else:
             st_col = CLR_WARN
-        print(f"  {r['cve']:<{w_cve}}  {r['suse_score']:<{w_ss}}  {r['cna_score']:<{w_cs}}  {CLR_BOLD}{r['os']:<{w_os}}{CLR_RESET}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {r['patches']:<{w_pa}}  {r['pkgs']:<{w_pk}}  {r['action']}")
+        _p_lines = r.get("patch_lines") or [r["patches"]]
+        print(f"  {r['cve']:<{w_cve}}  {r['suse_score']:<{w_ss}}  {r['cna_score']:<{w_cs}}  {CLR_BOLD}{r['os']:<{w_os}}{CLR_RESET}  {st_col}{r['status']:<{w_st}}{CLR_RESET}  {_p_lines[0]:<{w_pa}}  {r['pkgs']:<{w_pk}}  {r['action']}")
+        for _extra_p in _p_lines[1:]:
+            print(f"  {'':<{w_cve}}  {'':<{w_ss}}  {'':<{w_cs}}  {'':<{w_os}}  {'':<{w_st}}  {_extra_p:<{w_pa}}  {'':<{w_pk}}  ")
 
     print("  " + "-" * (len(hdr) - 2))
     sll_cves_in_matrix = {
