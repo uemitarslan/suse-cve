@@ -24,6 +24,23 @@ STALE_THRESHOLD_HOURS = 48
 
 _DIFF_SNAP_DIR = os.path.join(DATA_DIR, "diff_snapshots")
 
+def _extract_module_stream(pkg_str: str) -> str:
+    """Extract full module stream identifier like 'php:8.3' from module or RPM version strings."""
+    s = (pkg_str or "").strip().lower()
+    if not s:
+        return ""
+    if ":" in s:
+        m = re.match(r"^([a-z0-9_.-]+:[0-9]+(?:\.[0-9]+)?)", s)
+        if m:
+            return m.group(1)
+        head, tail = s.split(":", 1)
+        stream_tok = tail.split("-", 1)[0].strip()
+        return f"{head}:{stream_tok}" if stream_tok else head
+    m_rpm = re.match(r"^([a-z0-9_.-]+?)-([0-9]+\.[0-9]+)(?:[.-]|$)", s)
+    if m_rpm:
+        return f"{m_rpm.group(1)}:{m_rpm.group(2)}"
+    return ""
+
 def _build_cve_diff_snapshot(cve_id, rel_arg, output_dict, sorted_patches, sll_gap, meta_payload, rows=None):
     prod_state = {}
     if isinstance(output_dict, dict) and output_dict:
@@ -648,9 +665,63 @@ def fetch_cisa_kev(cve_id: str):
     return _KEV_INDEX.get(cve_id.upper(), {"exploited": False})
 
 
+_RH_INTEL_MEM_CACHE = {}
+
+def _parse_rh_cve_html_releases(cve_id: str, html_text: str) -> list:
+    """Fallback parser for https://access.redhat.com/security/cve/<CVE> to extract RHSA advisories & products/streams."""
+    if not html_text:
+        return []
+    import html as _html
+    plain = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", html_text))).strip()
+    rhsas = []
+    for m in re.finditer(r"\b(RHSA-\d{4}:\d+)\b", plain):
+        adv = m.group(1)
+        if adv not in rhsas:
+            rhsas.append(adv)
+    if not rhsas:
+        return []
+    out = []
+    seen_pairs = set()
+    for adv in rhsas:
+        matched_any = False
+        for m_adv in re.finditer(re.escape(adv), plain):
+            ctx = plain[max(0, m_adv.start() - 260):min(len(plain), m_adv.end() + 260)]
+            prods = re.findall(r"Red Hat Enterprise Linux\s+(?:7|8|9|10)(?:\.[0-9]+)?(?:\s+EUS)?", ctx, re.I)
+            streams = re.findall(r"\b([a-zA-Z0-9_.-]+:[0-9]+(?:\.[0-9]+)?)\b", ctx)
+            if not prods:
+                prods = re.findall(r"Red Hat Enterprise Linux\s+(?:7|8|9|10)(?:\.[0-9]+)?(?:\s+EUS)?", plain, re.I)
+            for pr in dict.fromkeys(prods):
+                pkg_hint = streams[0] if streams else ""
+                key = (pr.strip(), adv, pkg_hint)
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    out.append({
+                        "product_name": pr.strip(),
+                        "advisory": adv,
+                        "package": pkg_hint,
+                        "release_date": "",
+                        "source_type": "rh_cve_html",
+                    })
+                    matched_any = True
+        if not matched_any:
+            key = ("Red Hat Enterprise Linux", adv, "")
+            if key not in seen_pairs:
+                seen_pairs.add(key)
+                out.append({
+                    "product_name": "Red Hat Enterprise Linux",
+                    "advisory": adv,
+                    "package": "",
+                    "release_date": "",
+                    "source_type": "rh_cve_html",
+                })
+    return out
+
 def fetch_redhat_intel(cve_id: str) -> dict:
-    """Fetch official mitigation and statement texts from Red Hat Security Data API (CC BY 4.0)."""
-    rh_url = f"https://access.redhat.com/hydra/rest/securitydata/cve/{cve_id}.json"
+    """Fetch official mitigation, statement, and affected_release data from Red Hat (Hydra API + CVE web fallback)."""
+    cve_u = (cve_id or "").strip().upper()
+    if cve_u in _RH_INTEL_MEM_CACHE:
+        return _RH_INTEL_MEM_CACHE[cve_u]
+    rh_url = f"https://access.redhat.com/hydra/rest/securitydata/cve/{cve_u}.json"
     res = {"mitigation": "", "statement": "", "bugzilla_desc": "", "source": rh_url, "affected_release": [], "package_state": []}
     try:
         proc = subprocess.run(
@@ -713,8 +784,24 @@ def fetch_redhat_intel(cve_id: str) -> dict:
                         res["mitigation"] = m_sec.group(1).strip()[:1600]
             except Exception:
                 pass
+        if not res["affected_release"]:
+            try:
+                proc_html = subprocess.run(
+                    ["curl", "-sL", "--connect-timeout", "4", "--max-time", "10", "-H", "User-Agent: suse-cve-cli/1.0", res["page_url"]],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=True
+                )
+                p_html = proc_html.stdout.decode("utf-8", errors="ignore")
+                fb_rels = _parse_rh_cve_html_releases(cve_u, p_html)
+                if fb_rels:
+                    res["affected_release"] = fb_rels
+                    res["source"] = f"{rh_url} + {res['page_url']}"
+            except Exception:
+                pass
     except Exception:
         pass
+    _RH_INTEL_MEM_CACHE[cve_u] = res
     return res
 
 
@@ -2275,7 +2362,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 if adv not in ref[xv]["rhsas"]:
                     ref[xv]["rhsas"].append(adv)
                 pkg_raw = (x.get("package") or x.get("pkg_norm") or "").strip()
-                st = _extract_stream_name(pkg_raw)
+                st = _extract_module_stream(pkg_raw) or _extract_stream_name(pkg_raw)
                 if st:
                     ref[xv]["streams_by_rhsa"].setdefault(adv, set()).add(st)
             return sorted(all_rhsas), ref
@@ -2321,7 +2408,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                             v_pkgs.update(str(x).strip() for x in pkgs if str(x).strip())
                 if not has_v_rel:
                     continue
-                rel_streams = {_extract_stream_name(pk) for pk in v_pkgs if _extract_stream_name(pk)}
+                rel_streams = {(_extract_module_stream(pk) or _extract_stream_name(pk)) for pk in v_pkgs if (_extract_module_stream(pk) or _extract_stream_name(pk))}
                 streams_by_rhsa = (rhel_ref.get(v) or {}).get("streams_by_rhsa") or {}
                 for rh_id in suse_all_rhsas:
                     rh_streams = streams_by_rhsa.get(rh_id) or set()
@@ -2368,20 +2455,64 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 and bool(pkgs)
                 for k, pkgs in (list(rel_map.items()) + list(raw_rel_map.items()))
             )
-            v_missing = [r for r in v_rhel if r not in set(v_suse)]
+            v_suse_streams = set()
+            for _mp in (rel_map, raw_rel_map):
+                if isinstance(_mp, dict):
+                    for _pk, _pv in _mp.items():
+                        if re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(v) + r"\b", str(_pk), re.IGNORECASE) and _pv:
+                            for _pkg_item in (_pv if isinstance(_pv, (list, set, tuple)) else [_pv]):
+                                _st = _extract_module_stream(str(_pkg_item)) or _extract_stream_name(str(_pkg_item))
+                                if _st:
+                                    v_suse_streams.add(_st)
+            for _prod_k, _plist in (patch_map or {}).items():
+                if v in _prod_major_vers(str(_prod_k)):
+                    for _po in (_plist or []):
+                        if isinstance(_po, dict):
+                            for _pf in ("package", "pkg", "stream", "summary"):
+                                _st = _extract_module_stream(str(_po.get(_pf) or "")) or _extract_stream_name(str(_po.get(_pf) or ""))
+                                if _st:
+                                    v_suse_streams.add(_st)
+
+            _ref_v = (_rhel_ref_by_ver.get(v) or {}) if isinstance(_rhel_ref_by_ver, dict) else {}
+            _streams_by_rhsa_v = _ref_v.get("streams_by_rhsa") or {}
+
+            v_missing = []
+            for r in v_rhel:
+                if r not in set(v_suse):
+                    v_missing.append(r)
+                    continue
+                _r_streams = _streams_by_rhsa_v.get(r) or set()
+                _r_mod_streams = {st for st in _r_streams if ":" in st}
+                if _r_mod_streams and v_suse_streams and not _r_mod_streams.issubset(v_suse_streams):
+                    v_missing.append(r)
+
             v_gap_pkgs = {}
             for r_id in v_missing:
-                pkgs_for_r = sorted({
-                    (x.get("package") or "").strip()
+                _r_streams = _streams_by_rhsa_v.get(r_id) or set()
+                _uncovered_streams = (_r_streams - v_suse_streams) if (_r_streams and v_suse_streams) else set()
+                _cand_pkgs = sorted({
+                    (x.get("package") or x.get("pkg_norm") or "").strip()
                     for x in rh_for_gap
                     if (x.get("advisory") or "").strip() == r_id
-                    and (x.get("sll_ver") or v) == v
-                    and (x.get("package") or "").strip()
+                    and ((x.get("sll_ver") or "").strip() == v or v in _prod_major_vers(x.get("product") or ""))
+                    and ((x.get("package") or x.get("pkg_norm") or "").strip())
                 })
+                if _uncovered_streams:
+                    _filtered_pkgs = [
+                        p for p in _cand_pkgs
+                        if (_extract_module_stream(p) or _extract_stream_name(p)) in _uncovered_streams
+                    ]
+                    pkgs_for_r = _filtered_pkgs or _cand_pkgs
+                else:
+                    pkgs_for_r = _cand_pkgs
                 if pkgs_for_r:
                     v_gap_pkgs[r_id] = pkgs_for_r
                     agg_gap_packages[r_id] = pkgs_for_r
             v_gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in v_missing]
+            _ser_streams_by_rhsa = {
+                str(k): sorted(str(x) for x in (val or []))
+                for k, val in (_streams_by_rhsa_v or {}).items()
+            }
             by_version[v] = {
                 "suse_rhsas": v_suse,
                 "rhel_rhsas": v_rhel,
@@ -2389,6 +2520,7 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
                 "gap_packages": v_gap_pkgs,
                 "has_gap": bool(v_missing),
                 "gap_errata_urls": v_gap_urls,
+                "streams_by_rhsa": _ser_streams_by_rhsa,
             }
             for r_id in v_missing:
                 if r_id not in agg_missing:
@@ -4724,7 +4856,53 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             else:
                 gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in missing_rhsas]
                 print("    {0}RH Gap Errata: {1}{2}".format(CLR_WARN, " | ".join(gap_urls), CLR_RESET))
+                rhsa_ver_map = {}
+                ordered_rhsas = list(missing_rhsas)
+                for vk, vv in sorted(by_v.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999):
+                    if not isinstance(vv, dict):
+                        continue
+                    s_map = vv.get("streams_by_rhsa") or {}
+                    g_pkgs = vv.get("gap_packages") or {}
+                    candidates = list(dict.fromkeys(
+                        list(vv.get("suse_rhsas") or [])
+                        + list(vv.get("rhel_rhsas") or [])
+                        + list(vv.get("missing_rhsas") or [])
+                        + list(s_map.keys())
+                    ))
+                    for r_id in candidates:
+                        if r_id not in ordered_rhsas:
+                            ordered_rhsas.append(r_id)
+                        ver_labels = []
+                        for st in sorted(s_map.get(r_id) or []):
+                            st_base = str(st).split("-", 1)[0].strip()
+                            if ":" in st_base:
+                                _, ver_part = st_base.split(":", 1)
+                                ver_clean = ver_part.split(":", 1)[0].strip()
+                                if ver_clean and ver_clean not in ver_labels:
+                                    ver_labels.append(ver_clean)
+                            elif st_base and st_base not in ver_labels:
+                                ver_labels.append(st_base)
+                        if not ver_labels and isinstance(g_pkgs, dict):
+                            for gp in (g_pkgs.get(r_id) or []):
+                                st_inf = _extract_module_stream(str(gp))
+                                st_base = st_inf.split("-", 1)[0].strip() if st_inf else ""
+                                if ":" in st_base:
+                                    _, ver_part = st_base.split(":", 1)
+                                    ver_clean = ver_part.split(":", 1)[0].strip()
+                                    if ver_clean and ver_clean not in ver_labels:
+                                        ver_labels.append(ver_clean)
+                        rhsa_ver_map.setdefault(r_id, [])
+                        for lbl in ver_labels:
+                            if lbl not in rhsa_ver_map[r_id]:
+                                rhsa_ver_map[r_id].append(lbl)
                 print("    {0}RHEL-SUSE Gap: {1} (released at Red Hat, not listed in SLL patches){2}".format(CLR_WARN, ", ".join(missing_rhsas), CLR_RESET))
+                known_ver_items = [
+                    f"{r_id}: " + ", ".join(rhsa_ver_map[r_id])
+                    for r_id in ordered_rhsas
+                    if rhsa_ver_map.get(r_id)
+                ]
+                if known_ver_items:
+                    print("    RHSA Versions: {0}".format(" | ".join(known_ver_items)))
     if errors:
         print(f"\n  {CLR_WARN}Errors:{CLR_RESET} {', '.join(e['cve'] + ': ' + e['error'] for e in errors)}")
     print()
