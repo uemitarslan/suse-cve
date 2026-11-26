@@ -4844,15 +4844,18 @@ def render_compact_os_matrix(results: list, errors: list = None, include_eol: bo
             by_v = entry.get("by_version") or {}
             active_vers = [vk for vk, vv in sorted(by_v.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999) if vv.get("missing_rhsas")]
             if len(active_vers) > 1:
-                per_rel_urls = []
-                per_rel_txt = []
+                pad_w = max(len(f"SLL {vk}") for vk in active_vers)
+                print(f"    {CLR_WARN}RH Gap Errata:{CLR_RESET}")
                 for vk in active_vers:
                     vr = by_v[vk].get("missing_rhsas") or []
                     v_urls = ", ".join("https://access.redhat.com/errata/{0}".format(r) for r in vr)
-                    per_rel_urls.append("SLL {0}: {1}".format(vk, v_urls))
-                    per_rel_txt.append("SLL {0} ({1})".format(vk, ", ".join(vr)))
-                print("    {0}RH Gap Errata: {1}{2}".format(CLR_WARN, " | ".join(per_rel_urls), CLR_RESET))
-                print("    {0}RHEL-SUSE Gap: {1} (released at Red Hat, not listed in SLL patches){2}".format(CLR_WARN, "; ".join(per_rel_txt), CLR_RESET))
+                    lbl = f"SLL {vk}".ljust(pad_w)
+                    print(f"      {CLR_WARN}{lbl} : {v_urls}{CLR_RESET}")
+                print(f"    {CLR_WARN}RHEL-SUSE Gap (released at Red Hat, not listed in SLL patches):{CLR_RESET}")
+                for vk in active_vers:
+                    vr = by_v[vk].get("missing_rhsas") or []
+                    lbl = f"SLL {vk}".ljust(pad_w)
+                    print(f"      {CLR_WARN}{lbl} : {', '.join(vr)}{CLR_RESET}")
             else:
                 gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in missing_rhsas]
                 print("    {0}RH Gap Errata: {1}{2}".format(CLR_WARN, " | ".join(gap_urls), CLR_RESET))
