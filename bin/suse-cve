@@ -2476,38 +2476,89 @@ def query(rel_arg: str, cve_arg: str, status_filter: str = None, as_json: bool =
             _ref_v = (_rhel_ref_by_ver.get(v) or {}) if isinstance(_rhel_ref_by_ver, dict) else {}
             _streams_by_rhsa_v = _ref_v.get("streams_by_rhsa") or {}
 
-            v_missing = []
-            for r in v_rhel:
-                if r not in set(v_suse):
-                    v_missing.append(r)
-                    continue
-                _r_streams = _streams_by_rhsa_v.get(r) or set()
-                _r_mod_streams = {st for st in _r_streams if ":" in st}
-                if _r_mod_streams and v_suse_streams and not _r_mod_streams.issubset(v_suse_streams):
-                    v_missing.append(r)
+            def _norm_gap_pkg(pkg_str):
+                return re.sub(r'^([A-Za-z0-9_.+-]+)-0:', r'\1:', str(pkg_str or "").strip())
 
+            def _pkg_stream_key(pkg_str):
+                norm_p = _norm_gap_pkg(pkg_str)
+                st = _extract_module_stream(norm_p) or _extract_stream_name(norm_p) or _extract_module_stream(pkg_str) or _extract_stream_name(pkg_str)
+                return _norm_gap_pkg(st) if st else ""
+
+            _v_rel_pkg_bases = set()
+            for _mp in (rel_map, raw_rel_map):
+                if isinstance(_mp, dict):
+                    for _pk, _pv in _mp.items():
+                        if re.search(r"SUSE\s+Liberty\s+Linux\s+" + re.escape(v) + r"\b", str(_pk), re.IGNORECASE) and _pv:
+                            for _pkg_item in (_pv if isinstance(_pv, (list, set, tuple)) else [_pv]):
+                                _pn = _norm_gap_pkg(str(_pkg_item)).strip().lower()
+                                if _pn:
+                                    _v_rel_pkg_bases.add(_pn.split(":", 1)[0].split("-", 1)[0])
+
+            _norm_suse_streams = {_norm_gap_pkg(st) for st in v_suse_streams if str(st or "").strip()}
+            _norm_suse_stream_bases = (
+                {st.split(":", 1)[0] for st in _norm_suse_streams if ":" in st}
+                | _norm_suse_streams
+                | _v_rel_pkg_bases
+            )
+
+            def _is_stream_covered(st_val):
+                nst = _norm_gap_pkg(st_val).lower()
+                if not nst:
+                    return False
+                if nst in _norm_suse_streams or nst in _norm_suse_stream_bases:
+                    return True
+                _base = nst.split(":", 1)[0]
+                if _base in _norm_suse_streams or _base in _norm_suse_stream_bases:
+                    return True
+                return False
+
+            v_missing = []
             v_gap_pkgs = {}
-            for r_id in v_missing:
-                _r_streams = _streams_by_rhsa_v.get(r_id) or set()
-                _uncovered_streams = (_r_streams - v_suse_streams) if (_r_streams and v_suse_streams) else set()
-                _cand_pkgs = sorted({
-                    (x.get("package") or x.get("pkg_norm") or "").strip()
+            for r in v_rhel:
+                _r_pkgs = sorted({
+                    _norm_gap_pkg((x.get("package") or x.get("pkg_norm") or "").strip())
                     for x in rh_for_gap
-                    if (x.get("advisory") or "").strip() == r_id
+                    if (x.get("advisory") or "").strip() == r
                     and ((x.get("sll_ver") or "").strip() == v or v in _prod_major_vers(x.get("product") or ""))
                     and ((x.get("package") or x.get("pkg_norm") or "").strip())
                 })
-                if _uncovered_streams:
-                    _filtered_pkgs = [
-                        p for p in _cand_pkgs
-                        if (_extract_module_stream(p) or _extract_stream_name(p)) in _uncovered_streams
-                    ]
-                    pkgs_for_r = _filtered_pkgs or _cand_pkgs
+                _r_streams = {_norm_gap_pkg(st) for st in (_streams_by_rhsa_v.get(r) or set()) if str(st or "").strip()}
+                for _rp in _r_pkgs:
+                    _pst = _pkg_stream_key(_rp)
+                    if _pst:
+                        _r_streams.add(_pst)
+
+                _uncovered_streams = {st for st in _r_streams if not _is_stream_covered(st)} if (_r_streams and _norm_suse_streams) else set()
+
+                if sll_rel_has_v:
+                    # Bei bereits RELEASED in SLL nur echte ungedeckte RHEL-Streams/-Pakete als Gap melden
+                    if _uncovered_streams:
+                        _filtered = [p for p in _r_pkgs if _pkg_stream_key(p) in _uncovered_streams]
+                        _chosen = _filtered or _r_pkgs
+                        v_missing.append(r)
+                        if _chosen:
+                            v_gap_pkgs[r] = _chosen
+                            agg_gap_packages[r] = _chosen
+                    elif not _norm_suse_streams and r not in set(v_suse):
+                        v_missing.append(r)
+                        if _r_pkgs:
+                            v_gap_pkgs[r] = _r_pkgs
+                            agg_gap_packages[r] = _r_pkgs
                 else:
-                    pkgs_for_r = _cand_pkgs
-                if pkgs_for_r:
-                    v_gap_pkgs[r_id] = [re.sub(r'^([A-Za-z0-9_.+-]+)-0:', r'\1:', str(p)) for p in pkgs_for_r]
-                    agg_gap_packages[r_id] = pkgs_for_r
+                    _is_missing = (r not in set(v_suse))
+                    _r_mod_streams = {st for st in _r_streams if ":" in st}
+                    if _r_mod_streams and _norm_suse_streams and not _r_mod_streams.issubset(_norm_suse_streams):
+                        _is_missing = True
+                    if _is_missing:
+                        v_missing.append(r)
+                        if _uncovered_streams:
+                            _filtered = [p for p in _r_pkgs if _pkg_stream_key(p) in _uncovered_streams]
+                            _chosen = _filtered or _r_pkgs
+                        else:
+                            _chosen = _r_pkgs
+                        if _chosen:
+                            v_gap_pkgs[r] = _chosen
+                            agg_gap_packages[r] = _chosen
             v_gap_urls = ["https://access.redhat.com/errata/{0}".format(r) for r in v_missing]
             _ser_streams_by_rhsa = {
                 str(k): sorted(str(x) for x in (val or []))
